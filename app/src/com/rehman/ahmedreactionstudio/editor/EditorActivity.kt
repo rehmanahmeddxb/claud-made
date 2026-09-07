@@ -199,9 +199,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private var screenLight = false
     private var screenLightView: View? = null
 
-    // ── SIDEBAR UI (replaces radial wheel + right rail + bottom sheet) ──
+    // ── CANVAS-FIRST STUDIO: the ☰ button is the only persistent control on the
+    // canvas; everything else (including the removed radial wheel, source rail,
+    // transport row and floating pills) lives inside `sidebar`. ──
     lateinit var sidebar: SidebarView
-    lateinit var floatingControls: FloatingControls
+    lateinit var menuBtn: IconBtn
 
     lateinit var engine: PreviewEngine
     private val undo = UndoStack()
@@ -355,6 +357,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     override fun onResume() {
         super.onResume()
+        // Returning from the camera / picker / recents leaves the system bars
+        // shown; the studio is immersive by definition, so re-arm it.
+        UI.immersive(this, true)
         val pending = ScreenCaptureService.pendingFile
         if (pending != null && pending.exists()) {
             ScreenCaptureService.pendingFile = null
@@ -434,11 +439,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
-        rootFrame.removeAllViews()
-        com.rehman.ahmedreactionstudio.editor.StudioLayoutInjector.inject(this, rootFrame)
-        rebindDock()
-        rebuildDock()
-        rebuildSourceDock()
+        // Remember where the user was BEFORE the workspace is rebuilt on fresh
+        // views — reading `sidebar.isOpen` after inject() would always be false,
+        // because injecting builds a new SidebarView (this was the "sidebar
+        // snaps shut when I turn the phone" bug).
+        val wasSidebarOpen = this::sidebar.isInitialized && sidebar.isOpen
+        // One re-layout path, shared with every other "chrome changed shape"
+        // event: it clears the root, re-injects the workspace and rebinds the dock.
+        relayoutChrome()
         refreshContextBar()
         updateRecordButton()
         updateRecChip()
@@ -450,6 +458,15 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             val l = selectedId?.let { proj?.layerById(it) }
             if (l != null) openAdvancedSheet(l) else setSheet(null)
         }
+        // rotation re-injects every view, so the menu would snap shut mid-edit.
+        // It comes back open with the same branches expanded — rows are keyed by
+        // stable ids (layer.<uuid>), not positions, so the state survives.
+        if (wasSidebarOpen) sidebar.restoreOpen(true)
+        // every overlay the injector re-created starts hidden-or-shown from its
+        // own defaults, so re-assert the real state before the user touches it
+        updateEmptyState()
+        updateName()
+        refreshSidebar()
         stage.post { syncPreviewTarget() }
         stage.refresh()
     }
@@ -459,12 +476,34 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val root = FrameLayout(this)
         rootFrame = root
         root.setBackgroundColor(UI.BLACK)
-        
-        com.rehman.ahmedreactionstudio.editor.StudioLayoutInjector.inject(this, root)
-        
+        // 100 % means 100 %: no system bars, paint through the notch, and read
+        // the insets the window actually reports for the one floating control
+        UI.drawIntoCutout(this)
+        UI.immersive(this, true)
+        bindSystemInsets(root)
+        UI.keepScreenOn(window, true)
+        StudioLayoutInjector.inject(this, root)
+        // The window manager can hand back the bars after the first layout pass
+        // (and always does after a rotation), so re-assert immersive once the
+        // root has been measured rather than trusting the call above.
+        root.post { UI.immersive(this, true) }
         setContentView(root)
     }
     private fun updateStageInsets() = applyViewportInsets()
+
+    /**
+     * The studio used to fake its safe area with hardcoded dp constants and
+     * never read the real WindowInsets, so floating chrome slid under a notch.
+     * There is exactly one floating control now, placed from what Android
+     * actually reports.
+     */
+    private fun bindSystemInsets(root: FrameLayout) {
+        root.setOnApplyWindowInsetsListener { _, insets ->
+            readSystemInsets(insets)
+            insets
+        }
+        if (Build.VERSION.SDK_INT >= 30) window.decorView.requestApplyInsets()
+    }
 
     /** Step 5's 38% panel cap / 28% canvas reserve, including floating controls. */
     private fun capPanelHeight(vararg args: Any?) { }
@@ -507,11 +546,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private fun isLandscape(): Boolean =
         resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
-    private fun railWidthPx(): Int =
-        (resources.displayMetrics.widthPixels * 0.40f).toInt()
-            .coerceIn(UI.dp(this, 220), UI.dp(this, 340))
-
-    private fun buildSideRail(vararg args: Any?) { }
+        private fun buildSideRail(vararg args: Any?) { }
 
     private fun relayoutChrome(vararg args: Any?) {
         rootFrame.removeAllViews()
@@ -521,38 +556,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         rebuildSourceDock()
     }
 
-    private fun dockBtn(parent: LinearLayout, icon: Int, label: String, desc: String,
-                        active: Boolean = false, fn: () -> Unit): LinearLayout {
-        val b = LinearLayout(this)
-        b.orientation = LinearLayout.VERTICAL
-        b.gravity = Gravity.CENTER
-        b.isClickable = true
-        b.isFocusable = true
-        b.contentDescription = desc
-        b.setPadding(UI.dp(this, 6), UI.dp(this, 4), UI.dp(this, 6), UI.dp(this, 3))
-        b.background = Ic.pill(this,
-            if (active) Color.argb(70, 255, 90, 44) else Color.argb(40, 255, 255, 255), 14f,
-            if (active) Color.argb(200, 255, 90, 44) else Color.argb(50, 255, 255, 255))
-        val iv = android.widget.ImageView(this)
-        iv.setImageDrawable(Ic.get(this, icon, if (active) UI.ACCENT2 else UI.FG))
-        iv.layoutParams = LinearLayout.LayoutParams(UI.dp(this, 22), UI.dp(this, 22))
-        b.addView(iv)
-        val tv = TextView(this)
-        tv.text = label
-        tv.textSize = 9.5f
-        tv.maxLines = 1
-        tv.setTextColor(if (active) UI.ACCENT2 else UI.FG2)
-        tv.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        b.addView(tv)
-        // 48dp minimum touch target (accessibility) with 4dp gaps
-        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(this, 48))
-        lp.setMargins(UI.dp(this, 2), 0, UI.dp(this, 2), 0)
-        b.minimumWidth = UI.dp(this, 56)
-        b.layoutParams = lp
-        b.setOnClickListener { b.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY); fn() }
-        parent.addView(b)
-        return b
-    }
+
 
     /** Layer chips plus [Camera][Video][+ Add]; expanded adds Image / Text / Screen. */
     private fun rebuildSourceDock() {
@@ -571,57 +575,38 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     private fun buildFullCanvasExit(vararg args: Any?) { }
 
+    /**
+     * IMMERSIVE CANVAS. The studio is already chrome-free, so this mode means
+     * the one remaining thing — the ☰ — hides as well: a true full-screen
+     * review of the composition (that is what it is for: checking a frame
+     * before you record it).
+     *
+     * There is deliberately no ✕ button to put back on screen. Tapping the
+     * canvas, or pressing Back, restores the ☰; the system bars are already
+     * immersive, so nothing else changes.
+     */
     private fun setFullCanvas(on: Boolean) {
         if (fullCanvas == on) return
-        if (!this::topBar.isInitialized || !this::sheet.isInitialized ||
-            !this::fullExitBtn.isInitialized) return
         fullCanvas = on
         if (on) {
             setSheet(null)
+            if (this::sidebar.isInitialized && sidebar.isOpen) sidebar.close()
             if (this::wheel.isInitialized) wheel.dismiss(animated = false)
         }
-        val vis = if (on) View.GONE else View.VISIBLE
-        topBar.visibility = vis
-        sheet.visibility = vis
-        rootFrame.findViewWithTag<View>("sourceRail")?.visibility = vis
-        rootFrame.findViewWithTag<View>("wheelRail")?.visibility = vis
-        rootFrame.findViewWithTag<View>("bottomDock")?.visibility = vis
-        quickWrap.visibility = if (on) View.GONE else View.VISIBLE
-        if (on) {
-            recChip.visibility = View.GONE
-            statsHud.visibility = View.GONE
-            hiddenPill.visibility = View.GONE
-            emptyOverlay.visibility = View.GONE
-        } else {
+        if (this::menuBtn.isInitialized)
+            menuBtn.visibility = if (on) View.GONE else View.VISIBLE
+        if (this::emptyOverlay.isInitialized && on) emptyOverlay.visibility = View.GONE
+        if (this::statsHud.isInitialized) statsHud.visibility = View.GONE
+        if (this::recChip.isInitialized) recChip.visibility = View.GONE
+        if (this::hiddenPill.isInitialized) hiddenPill.visibility = View.GONE
+        if (!on) {
             refreshAll()
             updateRecChip()
         }
-        fullExitBtn.visibility = if (on) View.VISIBLE else View.GONE
-        fullExitBtn.bringToFront()
-        // immersive system bars: API 30+ controller, legacy flags below (minSdk 26)
-        if (Build.VERSION.SDK_INT >= 30) {
-            val ctl = window.insetsController
-            if (ctl != null) {
-                if (on) {
-                    ctl.systemBarsBehavior = android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                    ctl.hide(android.view.WindowInsets.Type.systemBars())
-                } else ctl.show(android.view.WindowInsets.Type.systemBars())
-            }
-        } else {
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = if (on)
-                (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                    View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN)
-            else View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-        }
-        // top margin of the exit button must clear the cutout
-        (fullExitBtn.layoutParams as? FrameLayout.LayoutParams)?.let {
-            it.topMargin = UI.dp(this, 12) + (if (on) sysT else 0)
-            fullExitBtn.layoutParams = it
-        }
+        UI.immersive(this, true)
         applyViewportInsets()
-        UI.toast(this, if (on) "Full canvas — tap ✕ to return" else "Controls restored")
+        UI.toast(this, if (on) "Immersive canvas \u2014 tap an empty area or press Back " +
+            "for the menu" else "Menu button back")
     }
 
     private fun readSystemInsets(insets: android.view.WindowInsets) {
@@ -649,21 +634,55 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     /**
-     * Compute the avoid-rect for the stage from the chrome that is actually
-     * visible right now and hand it to StageView, which re-fits the canvas.
-     * Called after every layout pass (cheap: StageView ignores unchanged
-     * values), so opening a panel, expanding the dock, selecting a source or
-     * rotating the phone all keep the whole composition on screen.
+     * CANVAS-FIRST viewport rule: the stage is inset by NOTHING. It used to be
+     * pushed around by the top bar, the wheel rail, the landscape source rail
+     * and the transport dock; all of that chrome is gone, so the only thing
+     * that can still move the canvas is a sheet the user opened on purpose
+     * (see [refreshViewportInsets]).
+     *
+     * What is left to do here is keep the few floating overlays — ☰, the REC
+     * readout, the stats HUD — inside the display cutout / system-bar safe
+     * area instead of under them, and step the menu button back while a take
+     * is running. Cheap and idempotent: this runs after every layout pass.
      */
-    private fun applyViewportInsets(vararg args: Any?) {
-        // topBar drew a fixed 8dp top padding regardless of the status bar /
-        // cutout height, so on edge-to-edge devices the status bar overlapped
-        // the row and clipped it. Add the live system inset on top of the
-        // designer's base padding instead of a hardcoded constant.
-        if (this::topBar.isInitialized) {
-            val base = UI.dp(this, 8)
-            topBar.setPadding(topBar.paddingLeft, base + sysT, topBar.paddingRight, base)
+    internal fun applyViewportInsets(vararg args: Any?) {
+        if (this::menuBtn.isInitialized) {
+            edge(UI.dp(this, 8), UI.dp(this, 8), sysL, sysT, sysR, menuBtn)
         }
+        if (this::statsHud.isInitialized) {
+            edge(UI.dp(this, 8), UI.dp(this, 8), sysL, sysT, sysR, statsHud)
+        }
+        if (this::recChip.isInitialized) {
+            (recChip.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+                val want = UI.dp(this, 12) + sysT
+                if (lp.topMargin != want) {
+                    lp.topMargin = want
+                    recChip.layoutParams = lp
+                }
+            }
+        }
+        // the ☰ steps back while a take is running so it never competes with
+        // the picture; it comes straight back up as soon as the menu opens
+        if (this::menuBtn.isInitialized) {
+            val menuUp = this::sidebar.isInitialized && sidebar.isOpen
+            val busy = recording || (engineReady() && engine.anyPlaying())
+            val want = if (busy && !menuUp) 0.5f else 1f
+            if (Math.abs(menuBtn.alpha - want) > 0.01f) {
+                menuBtn.animate().alpha(want).setDuration(200).start()
+            }
+        }
+    }
+
+    /** pin a floating overlay at (startDp, topDp), pushed clear of the safe area */
+    private fun edge(startDp: Int, topDp: Int, sysL: Int, sysT: Int, sysR: Int, v: View?) {
+        val view = v ?: return
+        val lp = view.layoutParams as? FrameLayout.LayoutParams ?: return
+        val l = startDp + sysL
+        val t = topDp + sysT
+        val r = startDp + sysR
+        if (lp.leftMargin == l && lp.topMargin == t && lp.rightMargin == r) return
+        lp.leftMargin = l; lp.topMargin = t; lp.rightMargin = r
+        view.layoutParams = lp
     }
 
     internal fun buildSnackBar(root: FrameLayout) {
@@ -794,46 +813,58 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         progOnCancel = null
     }
 
-    // ================= radial menu entry points =================
+    // ================= the removed wheel =====================================
+    //
+    // `RadialMenus` / `RadialMenuView` still compile and every verb they used
+    // to fire still works — from the menu. The rings themselves are gone:
+    // `activity.wheel` is left uninitialised by the injector, so [wheelReady()]
+    // is permanently false and the gesture can never cover the canvas. The ring
+    // *content* moved into `SidebarTree` (three levels deep, searchable); the
+    // ring *gesture* did not survive the redesign because it could not be read,
+    // searched or reached one-handed.
 
-    /** Open the root ring, blooming from the Studio button. */
-    private fun openRootWheel() {
-        if (!wheelReady()) return
-        setSheet(null)
-        val loc = IntArray(2); val rootLoc = IntArray(2)
-        if (this::studioBtn.isInitialized) {
-            studioBtn.getLocationOnScreen(loc)
-            rootFrame.getLocationOnScreen(rootLoc)
-            val ax = (loc[0] + studioBtn.width / 2f) - rootLoc[0]
-            val ay = (loc[1] + studioBtn.height / 2f) - rootLoc[1]
-            wheel.show(RadialMenus.root(this), ax, ay - UI.dpf(this, 28f))
-        } else {
-            wheel.show(RadialMenus.root(this), -1f, -1f)
-        }
-    }
+    // ================= the menu: the studio's only navigation =================
 
-    /** Open a specific ring at a point (used by canvas long-press and ◉). */
-    fun openWheelLevel(level: RadialMenuView.Level, ax: Float, ay: Float) {
-        if (!wheelReady()) return
-        setSheet(null)
-        wheel.show(level, ax, ay)
-    }
+    /** The chrome is re-injected on rotation, so callers must ask before use. */
+    internal fun menuButtonReady(): Boolean = this::menuBtn.isInitialized
 
-    // ================= sidebar (replaces radial wheel + right rail) =================
-
-    /** Toggle the sidebar open / closed. */
+    /** ☰ tap. The canvas does NOT resize — the menu overlays it. */
     fun toggleSidebar() {
         if (!this::sidebar.isInitialized) return
+        if (!sidebar.isOpen && fullCanvas) setFullCanvas(false)
         sidebar.toggle()
-        // recompute canvas insets when sidebar opens/closes
         applyViewportInsets()
+    }
+
+    /** Open the menu straight at a branch, e.g. `openSidebarSection("sources")`. */
+    fun openSidebarSection(sectionId: String, vararg itemIds: String) {
+        if (!this::sidebar.isInitialized) return
+        if (fullCanvas) setFullCanvas(false)
+        refreshSidebar()
+        sidebar.openTo(sectionId, *itemIds)
+        applyViewportInsets()
+    }
+
+    /** Long-press a source → menu open inside that source's own branch. */
+    fun openSidebarForSource(id: String?) {
+        if (id == null) { openSidebarSection("sources"); return }
+        openSidebarSection("sources", "layer." + id)
     }
 
     /** Rebuild the sidebar tree from live project state. */
     fun refreshSidebar() {
         if (!this::sidebar.isInitialized) return
         val sections = SidebarTree.build(this)
+        sidebar.setHeader(proj?.name?.ifBlank { "Untitled" } ?: "Studio", studioSubtitle())
         sidebar.refresh(sections)
+    }
+
+    /** The ONE header line the menu shows: ratio · source count · save state. */
+    private fun studioSubtitle(): String {
+        val p = proj ?: return "16:9"
+        val n = p.layers.size
+        val saved = if (saveDirty) "\u25cf saving\u2026" else "\u2713 saved"
+        return "${p.aspect.code} \u00b7 $n source" + (if (n == 1) "" else "s") + " \u00b7 $saved"
     }
 
     // ================= sheet (only where a ring is the wrong tool) =================
@@ -948,7 +979,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             contentDescription = "Add a source"
             setOnClickListener {
                 setSheet(null)
-                openWheelLevel(RadialMenus.add(this@EditorActivity), -1f, -1f)
+                openSidebarSection("add")
             }
         }
         val alp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(this, 48))
@@ -1221,17 +1252,6 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     // ================= Radial wheel =================
 
-    /** ◉ on the quick bar: jump straight into this source's ring (depth 1). */
-    private fun openWheel(anchor: View, l: Layer) {
-        val loc = IntArray(2)
-        anchor.getLocationOnScreen(loc)
-        val rootLoc = IntArray(2)
-        rootFrame.getLocationOnScreen(rootLoc)
-        val ax = (loc[0] + anchor.width / 2f) - rootLoc[0]
-        val ay = (loc[1] + anchor.height / 2f) - rootLoc[1]
-        openWheelLevel(RadialMenus.source(this, l.id), ax, ay)
-    }
-
     /** destructive operations are locked while an export runs (plan §7) */
     private fun guardRecording(f: () -> Unit) {
         if (exportRunning) { UI.toast(this, "Export in progress — stop it to make changes"); return }
@@ -1260,15 +1280,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             return
         }
         if (panelScroll.parent == null) {
-            // P0-1 fallback: the properties sheet isn't attached in minimal
-            // chrome — building into it would be an invisible no-op (this is
-            // what the source ring's "Advanced…" petal hits). Open the
-            // source's own ring instead: every one-tap verb works there.
+            // The properties sheet isn't attached (inject hasn't run, or the
+            // window is mid-teardown). Building into it would be an invisible
+            // no-op, so select the source and open ITS OWN menu branch: every
+            // verb the sheet offered is a row in there.
             selectedId = l.id
             refreshContextBar(); rebuildDock(); rebuildSourceDock()
             if (this::stage.isInitialized) stage.refresh()
-            openWheelLevel(RadialMenus.source(this, l.id), -1f, -1f)
-            UI.toast(this, "Detailed properties are being restored — source controls opened")
+            openSidebarForSource(l.id)
             return
         }
         if (fullCanvas) setFullCanvas(false)
@@ -1434,13 +1453,22 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     /** P1-6: the empty hint shows only when there is nothing on the canvas. */
     private fun updateEmptyState() {
         if (!this::emptyOverlay.isInitialized) return
-        emptyOverlay.visibility =
-            if (proj?.layers?.isEmpty() == true) View.VISIBLE else View.GONE
+        val empty = proj?.layers?.isEmpty() == true && !fullCanvas
+        if (empty && emptyOverlay.visibility != View.VISIBLE) {
+            // fade back in; the injector's timer fades it out again, so an empty
+            // canvas is never decorated — it explains itself once
+            emptyOverlay.animate().cancel()
+            emptyOverlay.alpha = 0f
+            emptyOverlay.visibility = View.VISIBLE
+            emptyOverlay.animate().alpha(1f).setDuration(220).start()
+        } else if (!empty) {
+            emptyOverlay.visibility = View.GONE
+        }
     }
 
-    /** P1-6: empty-hint tap = open the Sources wheel (same as the rail). */
+    /** Tapping an empty canvas opens the menu on Add — no second entry point. */
     fun emptyHintTap() {
-        openWheelLevel(RadialMenus.sources(this), -1f, -1f)
+        openSidebarSection("add")
     }
 
     internal fun shouldShowCoach(): Boolean =
@@ -1574,11 +1602,23 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         selectedId = id
         refreshContextBar(); rebuildDock(); rebuildSourceDock(); stage.refresh()
         bindSidePanels()
+        // the menu mirrors the selection: "Selected source" and every per-layer
+        // badge must follow the tap, or the tree is a snapshot of the past
+        refreshSidebar()
     }
     override fun bitmapOf(l: Layer): Bitmap? = engine.frameOf(l)
     override fun textOf(l: Layer): String = l.text
     override fun onTransform() { markDirty() }
-    override fun onTapEmpty() { select(null) }
+    /**
+     * Empty-canvas tap. Two jobs, both honest: it clears the selection, and it
+     * is the way OUT of immersive mode (there is no ✕ up there any more, and
+     * the ☰ is hidden in that mode — the canvas itself is the control).
+     */
+    override fun onTapEmpty() {
+        if (fullCanvas) { setFullCanvas(false); return }
+        if (proj?.layers?.isEmpty() == true) { openSidebarSection("add"); return }
+        select(null)
+    }
     override fun onChanged() { pushUndo() }
     override fun onDoubleTap(l: Layer) {
         // text layers edit on double tap; media ignores it (hide-on-double-tap
@@ -1590,19 +1630,15 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         showSnack("${l.name} is locked — gestures are off", "UNLOCK") { ctrl.toggleLocked(l.id) }
     }
 
-    /** Long press anywhere on the canvas opens the rings under the finger. */
+    /**
+     * Long-press the canvas: the menu opens *inside* the branch you pressed —
+     * that source's own sub-menu, or Sources on empty canvas. This replaces the
+     * radial wheel that used to bloom under the finger, and it keeps the
+     * gesture while giving the user a list they can actually read.
+     */
     override fun onLongPressCanvas(l: Layer?, x: Float, y: Float) {
-        val stageLoc = IntArray(2); val rootLoc = IntArray(2)
-        stage.getLocationOnScreen(stageLoc)
-        rootFrame.getLocationOnScreen(rootLoc)
-        val ax = x + stageLoc[0] - rootLoc[0]
-        val ay = y + stageLoc[1] - rootLoc[1]
-        if (l != null) {
-            select(l.id)
-            openWheelLevel(RadialMenus.source(this, l.id), ax, ay)
-        } else {
-            openWheelLevel(RadialMenus.root(this), ax, ay)
-        }
+        if (l != null) select(l.id)
+        openSidebarForSource(l?.id)
     }
 
     private fun onSourceChanged() {
@@ -1659,12 +1695,29 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         refreshTabBar()
         bindSidePanels()
         refreshSidebar()
-        // update floating controls state
-        if (this::floatingControls.isInitialized) {
-            val playing = engineReady() && engine.anyPlaying()
-            val hasLive = proj?.layers?.any { it.isLive() } == true
-            val hasClip = proj?.layers?.any { it.isClip() } == true
-            floatingControls.update(playing, recording, hasLive && hasClip)
+    }
+
+    /**
+     * The canvas is 100 % of the interface, so the only thing that may push it
+     * around is a sheet that is actually open. The menu is an OVERLAY: opening
+     * it never rescales the composition (framing stays what you framed, and
+     * what you framed is what exports).
+     */
+    private fun refreshViewportInsets() {
+        if (!this::stage.isInitialized || !this::rootFrame.isInitialized) return
+        if (rootFrame.width <= 0 || rootFrame.height <= 0) return
+        capPanelHeight()
+        val sheetOpen = this::sheet.isInitialized && sheet.visibility == View.VISIBLE &&
+            sheet.parent != null
+        val insetB = if (sheetOpen) sheet.height.coerceAtLeast(0) else 0
+        stage.setViewportInsets(0, 0, 0, insetB)
+        // transient feedback only: the snackbar floats at the bottom edge
+        (snackBar?.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+            val want = insetB + UI.dp(this, 12)
+            if (lp.bottomMargin != want) {
+                lp.bottomMargin = want
+                snackBar?.layoutParams = lp
+            }
         }
     }
 
@@ -2292,13 +2345,18 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     private fun updateName() {
+        // The top strip is gone with the canvas-first redesign: a project's name
+        // and save state now live in the MENU HEADER, which is where the user
+        // goes to do anything. The tag lookup stays for any chrome that is
+        // re-attached later — findTagged returns null harmlessly.
         val top = (window.decorView as ViewGroup)
         val nameView = findTagged<TextView>(top, "name")
         val meta = findTagged<TextView>(top, "meta")
         nameView?.text = proj?.name
-        val n = proj?.layers?.size ?: 0
-        val saved = if (saveDirty) "● Saving…" else "✓ Saved"
-        meta?.text = "${proj!!.aspect.code} canvas · $n source" + (if (n == 1) "" else "s") + " · $saved"
+        val line = studioSubtitle()
+        meta?.text = line
+        if (this::sidebar.isInitialized) sidebar.setHeader(
+            proj?.name?.ifBlank { "Untitled" } ?: "Studio", line)
     }
 
     private fun <T : View> findTagged(root: View, tag: String): T? {
@@ -2422,7 +2480,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             .setMessage("Recording captures your live camera together with a playing " +
                 "video. Add $missing to the canvas, frame them, then hit record.")
             .setPositiveButton("Add now") { _, _ ->
-                openWheelLevel(RadialMenus.add(this), -1f, -1f)
+                openSidebarSection("add")
             }
             .setNegativeButton("Not now", null)
             .show()
@@ -2526,49 +2584,6 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         } else if (measured in 1..maxH && lp.height != ViewGroup.LayoutParams.WRAP_CONTENT) {
             lp.height = ViewGroup.LayoutParams.WRAP_CONTENT
             sheet.layoutParams = lp
-        }
-    }
-
-    private fun refreshViewportInsets() {
-        if (!this::stage.isInitialized || !this::rootFrame.isInitialized) return
-        if (rootFrame.width <= 0 || rootFrame.height <= 0) return
-        capPanelHeight()
-        fun visibleBottom(tag: String): Int {
-            val v = rootFrame.findViewWithTag<View>(tag) ?: return 0
-            return if (v.visibility == View.VISIBLE) v.bottom else 0
-        }
-        var insetR = 0
-        val rail = rootFrame.findViewWithTag<View>("wheelRail")
-        if (rail != null && rail.visibility == View.VISIBLE)
-            insetR = (rootFrame.width - rail.left).coerceAtLeast(0)
-        // landscape source rail on the LEFT: the canvas fits beside it, never
-        // under it (this is the overlap the user reported)
-        var insetL = 0
-        val srcRail = rootFrame.findViewWithTag<View>("sourceRail")
-        if (srcRail != null && srcRail.visibility == View.VISIBLE)
-            insetL = srcRail.right.coerceAtLeast(0)
-        val insetT = maxOf(visibleBottom("topStrip"), visibleBottom("recChip"))
-        var insetB = 0
-        val dock = rootFrame.findViewWithTag<View>("bottomDock")
-        if (dock != null && dock.visibility == View.VISIBLE)
-            insetB = (rootFrame.height - dock.top).coerceAtLeast(0)
-        val sheetV = rootFrame.findViewWithTag<View>("bottomSheet")
-        if (sheetV != null && sheetV.visibility == View.VISIBLE)
-            insetB = maxOf(insetB, (rootFrame.height - sheetV.top).coerceAtLeast(0))
-        val breath = UI.dp(this, 6)
-        stage.setViewportInsets(
-            if (insetL > 0) insetL + breath else 0,
-            if (insetT > 0) insetT + breath else 0,
-            if (insetR > 0) insetR + breath else 0,
-            if (insetB > 0) insetB + breath else 0)
-        // keep the snackbar floating just above the bottom dock (which grows
-        // when the P0-2 transport row lands inside it)
-        (snackBar?.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-            val want = (if (insetB > 0) insetB + breath else 0) + UI.dp(this, 12)
-            if (lp.bottomMargin != want) {
-                lp.bottomMargin = want
-                snackBar?.layoutParams = lp
-            }
         }
     }
 
@@ -3191,31 +3206,23 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private fun sheetAttached(): Boolean =
         sheetReady() && panelScroll.parent != null
 
-    override fun enterFullCanvas() {
-        // Without an attached exit button there is no visible way back (Back
-        // still works, but the "tap ✕" toast would lie). Minimal chrome is
-        // already full-canvas, so there is nothing to enter.
-        if (!this::fullExitBtn.isInitialized || fullExitBtn.parent == null) {
-            UI.toast(this, "You're already viewing the full canvas")
-            return
-        }
-        setFullCanvas(true)
-    }
+    /**
+     * The Canvas → "Immersive canvas" row TOGGLES: hiding the ☰ has to be
+     * reversible from the canvas itself, so the same verb brings it back.
+     */
+    override fun enterFullCanvas() { setFullCanvas(!fullCanvas) }
+
+    /** menu row state: is the studio chrome-free (even the ☰ hidden)? */
+    override fun isImmersive(): Boolean = fullCanvas
     override fun openDockPanel() {
-        // Landscape: the source list is already permanently on screen — open
-        // the Sources ring instead of covering the canvas with a duplicate.
-        if (rootFrame.findViewWithTag<View>("sourceRail") != null) {
-            openWheelLevel(RadialMenus.sources(this), -1f, -1f)
-            return
-        }
         if (sheetAttached()) { setSheet("sources"); return }
-        openWheelLevel(RadialMenus.sources(this), -1f, -1f)
-        UI.toast(this, "Source list sheet is being restored — Sources ring opened")
+        // No sheet host (should not happen): the menu's own Sources branch is
+        // the honest fallback — it is where every source verb now lives.
+        openSidebarSection("sources")
     }
     override fun openMixerPanel() {
         if (sheetAttached()) { setSheet("mixer"); return }
-        openWheelLevel(RadialMenus.audioWheel(this), -1f, -1f)
-        UI.toast(this, "Mixer sheet is being restored — Audio ring opened")
+        openSidebarSection("audio")
     }
     override fun openExportPanel() {
         // P1-2: export settings live in the dialog (P0-5), not a sheet — even
@@ -3608,25 +3615,31 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 v.setBackgroundColor(Color.argb(242, 255, 246, 232))
                 v.isClickable = false
                 v.isFocusable = false
-                // behind stage, in front of root background so canvas remains visible
-                rootFrame.addView(v, 0, FrameLayout.LayoutParams(
+                // ON TOP of the canvas: the screen IS the light, so the panel
+                // has to cover the picture. It used to be inserted at index 0 —
+                // under the stage, whose opaque letterbox hid it completely, so
+                // "screen light" only ever raised the brightness and never
+                // glowed. The menu and the ☰ are lifted back over it below, so
+                // the user can always turn it off without leaving the studio.
+                rootFrame.addView(v, FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT))
                 screenLightView = v
             }
             screenLightView?.visibility = View.VISIBLE
-            // keep stage and overlays above the light
-            if (this::stage.isInitialized) stage.bringToFront()
-            emptyOverlay.bringToFront()
-            if (this::wheel.isInitialized) wheel.bringToFront()
             if (this::sheet.isInitialized) sheet.bringToFront()
+            if (this::sidebar.isInitialized) sidebar.bringToFront()
+            if (this::menuBtn.isInitialized) menuBtn.bringToFront()
+            snackBar?.bringToFront()
+            progOverlay?.bringToFront()
         } else {
             screenLightView?.visibility = View.GONE
         }
     }
 
+    /** Legacy verb: lighting is a sub-sub-menu of the source now. */
     override fun openFlashRing(l: Layer) {
-        openWheelLevel(RadialMenus.flash(this, l.id), -1f, -1f)
+        openSidebarSection("sources", "layer." + l.id, "light")
     }
 
     override fun isStatsHudOn(): Boolean =

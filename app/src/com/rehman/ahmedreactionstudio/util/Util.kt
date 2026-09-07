@@ -9,7 +9,10 @@ import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.os.Build
 import android.view.Window
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
@@ -169,6 +172,47 @@ object UI {
     fun margin(v: View, l: Int, t: Int, r: Int, b: Int, ctx: Context) {
         val lp = v.layoutParams as? LinearLayout.LayoutParams ?: return
         lp.setMargins(dp(ctx, l), dp(ctx, t), dp(ctx, r), dp(ctx, b))
+    }
+
+    /**
+     * CANVAS-FIRST window state for the studio: no status bar, no navigation
+     * bar, and the composition allowed to paint into the display cutout. A
+     * swipe still reveals the bars transiently, so nothing is taken away —
+     * Android's own gesture remains the way back.
+     *
+     * minSdk is 26, so the legacy `systemUiVisibility` path has to stay right:
+     * it is the only one that works on 8.0/9/10 devices.
+     */
+    fun immersive(a: Activity, on: Boolean) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            val ctl = a.window.insetsController ?: return
+            if (on) {
+                ctl.systemBarsBehavior =
+                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                ctl.hide(WindowInsets.Type.systemBars())
+            } else {
+                ctl.show(WindowInsets.Type.systemBars())
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            a.window.decorView.systemUiVisibility = if (on)
+                (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN)
+            else View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        }
+    }
+
+    /** Let the canvas use the whole panel instead of being letterboxed by a notch. */
+    fun drawIntoCutout(a: Activity) {
+        if (Build.VERSION.SDK_INT < 28) return
+        try {
+            val lp = a.window.attributes
+            lp.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            a.window.attributes = lp
+        } catch (_: Exception) { }
     }
 
     /** Dark status bar + dark navigation for every screen. */

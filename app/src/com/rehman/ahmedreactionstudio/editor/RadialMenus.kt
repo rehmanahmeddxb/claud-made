@@ -76,8 +76,10 @@ object RadialMenus {
         fun renameProject()
         fun saveNow()
         fun openDiagnostics()
-        /** Full Canvas mode: hide every overlay, fit the canvas into the safe area */
+        /** Full Canvas / immersive mode: every overlay hidden, canvas is 100 % */
         fun enterFullCanvas()
+        /** true while immersive mode is on (the hamburger itself is hidden too) */
+        fun isImmersive(): Boolean
         fun closeProject()
         fun editText(l: Layer)
         fun cycleTextColor(l: Layer)

@@ -5,10 +5,13 @@ framework APIs (`android.app`, `android.view`, `Camera2`, `MediaCodec`,
 `MediaMuxer`, OpenGL-free CPU compositor), packaged as
 `com.rehman.ahmedreactionstudio`.
 
-> **Architecture:** OBS-style source controls — see
-> [`docs/OBS_SOURCE_PLAN.md`](docs/OBS_SOURCE_PLAN.md). Sources are
-> first-class citizens: select one and its controls are one tap away,
-> never buried in settings. What you see is exactly what gets exported.
+> **Architecture:** OBS-style source controls behind a canvas-first
+> interface — see [`docs/OBS_SOURCE_PLAN.md`](docs/OBS_SOURCE_PLAN.md) for the
+> source model and [`docs/STUDIO_CLEAN_CANVAS_PROMPT.md`](docs/STUDIO_CLEAN_CANVAS_PROMPT.md)
+> for the workspace contract. The composition owns 100 % of the Studio; the one
+> control on screen is ☰, and every source verb is a row in the same
+> hierarchical menu — reachable, searchable, never buried in a settings screen.
+> What you see is exactly what gets exported.
 
 > **Consolidated baseline (2026-09-05):** Phase 2 canvas/selection/audio work
 > and the Step 5 editor UI are kept together. See the
@@ -16,24 +19,29 @@ framework APIs (`android.app`, `android.view`, `Camera2`, `MediaCodec`,
 > original commit IDs, conflict decisions, regression tests and device checks.
 
 - Animated splash screen (`SplashActivity`) then project home.
-- **Full-screen studio**: the composition contain-fits the space left by
-  measured controls and system insets. Step 5 tabs/source chips and a floating
-  contextual pill coexist with the landscape rail and Full Canvas mode.
-- **Sources, OBS-style**: every source gets a floating **Quick Control Bar**
-  (👁 hide · 🔇 mute · ⏯ source pause · 🔒 lock · fit · ◉ radial wheel · ⋮
-  advanced sheet), a **Source Dock** mini-mixer (per-row eye/mute toggles,
-  live status chips, drag-handle Z reordering) and a **contextual radial
-  wheel** that blooms with spring animations around the selected source.
-  Hide ≠ delete; pause = hold last frame; hidden sources keep their audio;
-  solo mutes everything else without destroying state.
+- **Canvas-first studio**: the `StageView` fills the window edge to edge — no
+  top strip, no bottom transport row, no rails, no floating pills, no radial
+  wheel, nothing inset around the picture. The single persistent control is the
+  **☰ menu button**; the sidebar overlays the canvas (opening it never resizes
+  the composition) and carries everything: sources, transport, audio, record,
+  canvas, export, project, settings. Full Canvas / immersive goes one step
+  further and hides ☰ too — tap an empty area or press Back to come back.
+- **Sources, OBS-style, from the tree**: every source has its own branch
+  (👁 hide · 🔇 mute · ⏯ pause · 🔒 lock · fit · opacity · volume · Z-order ·
+  advanced properties · duplicate · remove) nested menu → sub-menu →
+  sub-sub-menu, and a mini-mixer **Source Dock** opens on demand from that
+  branch. A row that cannot act right now is disabled *with a reason*, never a
+  dead button. Hide ≠ delete; pause = hold last frame; hidden sources keep
+  their audio; solo mutes everything else without destroying state.
 - **Fit mode per source**: Fill (cover) or Fit (whole frame, letterboxed) —
   camera takes default to Fit, so a camera is never "cut out" of the canvas.
 - **Main canvas first**: an empty project asks what the background is —
   local video, **recorded camera**, **screen recording**, or image; anything
   added afterwards is a PiP. Any source can later be promoted to canvas
-  background (advanced sheet / Canvas tab).
+  background (☰ → Sources → *source* → Advanced, or Canvas → Background).
 - 16:9 / 9:16 / 1:1 canvases (16:9 default) with normalized geometry,
-  independent phone orientation and an aspect picker.
+  independent phone orientation and an aspect picker (☰ → Canvas → Aspect
+  ratio). A new 16:9 project opens full-screen in landscape with only ☰.
 - Canvas gestures: tap select, **double-tap text to edit**, drag with snap,
   8-handle resize, rotate knob, pinch scale+rotate.
 - Import **video in any decodable container (MP4, AVI, WebM, MKV, 3GP, MOV)**
@@ -82,15 +90,21 @@ get:
 ## Layout
 
 - `app/src/.../ui` — `SplashActivity`, `HomeActivity`, `DiagnosticsActivity`
-- `app/src/.../editor` — `EditorActivity` (fullscreen OBS-style studio),
-  `StageView` (canvas gestures), `PreviewEngine`, `SourceDock` (mini mixer),
-  `RadialWheel` (animated contextual wheel), `Icons` (vector-icon toolkit)
+- `app/src/.../editor` — `EditorActivity` (canvas-first studio),
+  `StudioLayoutInjector` (the ONLY place chrome is created), `SidebarView` +
+  `SidebarTree` (the menu: sections → sub-menus → sub-sub-menus, search,
+  restore), `StageView` (canvas gestures), `PreviewEngine`, `SourceDock`
+  (on-demand mini mixer), `Icons` (vector-icon toolkit). `RadialWheel` /
+  `RadialMenus` still compile — the verb inventory the menu is checked against —
+  but nothing attaches them, so the wheel can never cover the canvas.
 - `app/src/.../camera` — `CameraActivity` (Camera2 + MediaRecorder, crash-safe)
 - `app/src/.../capture` — `ScreenCaptureService` (MediaProjection screen record)
 - `app/src/.../export` — `Exporter` (H.264/H.265/VP8/VP9 MediaCodec pipeline)
 - `app/src/.../core` — project model, `SourceController` (command layer),
   store, media probes, undo stack
 - `res/drawable/ic_*.xml` — Material-style vector icon set
+- `tools/sidebar-tree-test/` — fires every menu row headlessly and asserts every
+  committed verb is reachable from the menu (the canvas-first completeness proof)
 - `build-apk.sh` — dependency-free offline builder (aapt2 → R class →
   kotlinc → d8 → apksigner)
 - `.github/workflows/android.yml` — CI that builds, verifies and uploads the APK

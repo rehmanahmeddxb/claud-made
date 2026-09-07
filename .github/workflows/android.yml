@@ -56,7 +56,7 @@ jobs:
           path: /tmp/tc-install.log
           if-no-files-found: ignore
 
-      - name: JVM regression tests (audio, viewport, layers, selection geometry)
+      - name: JVM regression tests (audio, viewport, layers, geometry, menu tree)
         shell: bash
         env:
           TC_ROOT: /tmp/ahmed-tc
@@ -65,6 +65,7 @@ jobs:
           bash tools/viewport-fit-test/run.sh
           bash tools/layer-model-test/run.sh
           bash tools/step2-geom-check.sh
+          bash tools/sidebar-tree-test/run.sh
 
       - name: Build APK
         shell: bash
@@ -128,13 +129,21 @@ jobs:
           # updateSourceStrip were the pre-redesign chrome; the workspace chrome
           # is now StudioLayoutInjector with the Sources/Mixer panel pair.)
           features = {
-              # the radial menu must ship, and it must be the NESTED one:
-              # Level/submenu are what make petals open sub-petals rather than
-              # just firing an action and closing
-              'RadialMenuView': 'radial menu view',
-              'addPetal': 'radial petal bloom',
-              'RadialMenus': 'the menu tree (sources/add/controls/mixing/...)',
-              'submenu': 'nested sub-petals',
+              # Canvas-first Studio (2026-09-07): the ☰ menu IS the interface,
+              # so the sidebar view + its tree must ship with real hierarchy and
+              # deep-linking — not a stub that renders nothing. (The radial wheel
+              # is deliberately NOT asserted any more: RadialMenus survives as
+              # the Host verb contract the menu is written against, but the wheel
+              # view is no longer instantiated, because the canvas must stay
+              # clear. `openWheelLevel` is guarded by wheelReady().)
+              'SidebarView': 'the hamburger sidebar (the only navigation)',
+              'SidebarTree': 'menu > sub-menu > sub-sub-menu tree',
+              'openTo': 'deep link into a source branch',
+              'restoreOpen': 'menu state survives rotation',
+              'toggleSidebar': 'the ☰ is wired to the menu',
+              'applyViewportInsets': 'canvas 100% + safe-area placement',
+              'isImmersive': 'immersive full-canvas mode',
+              'RadialMenus': 'the verb contract (sources/add/controls/mixing/...)',
               # the camera must be usable as a LIVE canvas source, not only as
               # a separate fullscreen recorder
               'LiveCamera': 'live camera source',
@@ -155,14 +164,17 @@ jobs:
               'Resampler': 'sample-rate conversion',
               'MicThread': 'independent microphone capture',
               'AudioThread': 'sample-count audio encoding',
-              # Redesigned Studio workspace (PR #31): the injected chrome plus
-              # the panels it hosts must ship, not the stubbed pre-redesign
-              # editor methods.
+              # Canvas-first Studio workspace: the injector, the on-demand
+              # sheets the menu opens, and the panel widgets they use must ship.
+              # (bindPanels / buildTransport are gone from the list on purpose:
+              # that was the persistent transport + tab wiring, and
+              # validate-integration.py now FAILS if such chrome comes back.)
               'StudioLayoutInjector': 'Studio workspace chrome injector',
-              'bindPanels': 'panel listener binding',
-              'buildTransport': 'transport bar builder',
-              'SourcesPanel': 'source list panel',
-              'MixerPanel': 'audio mixer panel',
+              'buildSourcesPanel': 'on-demand source list sheet',
+              'buildMixerPanel': 'on-demand audio mixer sheet',
+              'openAdvancedSheet': 'per-source advanced sheet',
+              'SourcesPanel': 'source list panel widget',
+              'MixerPanel': 'audio mixer panel widget',
               'setFullCanvas': 'full canvas mode',
               'relayoutChrome': 'orientation re-layout delegation',
               'refreshContextBar': 'unified source actions',

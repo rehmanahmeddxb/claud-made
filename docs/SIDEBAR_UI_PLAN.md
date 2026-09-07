@@ -1,5 +1,17 @@
 # Sidebar UI Redesign Plan
 
+> **Status 2026-09-07 — built, with the chrome in §1–§4 removed.** The tree
+> format below (hierarchical menu, stable ids, collapsible levels) is what
+> `SidebarTree`/`SidebarView` implement. What did NOT ship is everything this
+> plan left on the canvas: the top strip, the floating Play/Pause/Stop/Record
+> buttons, the aspect/undo/redo pills and the right rail. The brief became
+> "the hamburger is the only button", so those controls were deleted rather
+> than relocated and their verbs moved into the menu. See
+> [`STUDIO_CLEAN_CANVAS_PROMPT.md`](STUDIO_CLEAN_CANVAS_PROMPT.md) for the
+> contract that governs the shipped layout, and
+> [`../AI_ENGINEERING_CHANGELOG.md`](../AI_ENGINEERING_CHANGELOG.md) for the
+> verification record.
+
 ## Goal
 
 Replace the radial-wheel + bottom-sheet + right-rail interface with a **collapsible
