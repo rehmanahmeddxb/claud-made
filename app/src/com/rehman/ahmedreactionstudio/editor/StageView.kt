@@ -1,0 +1,750 @@
+package com.rehman.ahmedreactionstudio.editor
+
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.util.AttributeSet
+import android.view.MotionEvent
+import android.view.View
+import com.rehman.ahmedreactionstudio.core.Compositor
+import com.rehman.ahmedreactionstudio.core.Layer
+import com.rehman.ahmedreactionstudio.core.LayerFit
+import com.rehman.ahmedreactionstudio.core.Project
+import com.rehman.ahmedreactionstudio.core.ViewportFit
+import com.rehman.ahmedreactionstudio.util.UI
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sin
+
+/**
+ * The compositor viewport: renders the composition with the same
+ * Compositor used by the exporter and handles the PiP gestures
+ * (select / move / 8-handle resize / rotate / pinch / snap).
+ *
+ * The view fills the whole screen and the CANVAS is contain-fitted inside the
+ * part of it that no chrome covers (see [setViewportInsets]): the top bar,
+ * the bottom dock / sheet / contextual controls and the system bars + display
+ * cutout are subtracted first, then `scale = min(availW / canvasW,
+ * availH / canvasH)` and the canvas is centred in what is left. Opening a
+ * panel therefore shrinks the canvas a little instead of hiding a strip of
+ * it — the whole composition is always visible, in portrait and landscape,
+ * for 16:9, 9:16 and 1:1 alike. The letterbox surround is stage furniture:
+ * drawn dark with a 1px frame around the exact area that will be exported.
+ *
+ * All gesture math happens in canvas-local pixels and normalized units
+ * (0..1 of the canvas), never in density pixels — mixing the two is what made
+ * snapping fire on every single drag. (Beware: inside a View subclass the
+ * simple name `LayerType` resolves to `android.view.View.LayerType`, so layer
+ * kinds are tested through `Layer.isText()` / `Layer.isVideoLike()`.)
+ */
+class StageView @JvmOverloads constructor(
+    ctx: Context,
+    attrs: AttributeSet? = null
+) : View(ctx, attrs) {
+
+    interface Host {
+        val project: Project
+        fun selectedId(): String?
+        fun select(id: String?)
+        fun bitmapOf(l: Layer): android.graphics.Bitmap?
+        fun textOf(l: Layer): String
+        fun onTransform()          // debounced autosave + UI refresh
+        fun onTapEmpty()
+        fun onChanged()            // immediate (gesture start) snapshot
+        fun onDoubleTap(l: Layer)  // text layers: edit; anything else: nothing
+        /** Tapping a locked layer: explain + offer unlock (never silent). */
+        fun onLockedTap(l: Layer)
+        /**
+         * Long press on the canvas: open the radial menu right under the
+         * finger — the source's own ring when a source was pressed, the root
+         * ring on empty canvas. [x]/[y] are in THIS view's pixels.
+         */
+        fun onLongPressCanvas(l: Layer?, x: Float, y: Float)
+    }
+
+    companion object {
+        private const val SURROUND = 0xFF06070A.toInt()
+        private const val MIN_BOX_N = 0.03f
+        private const val MAX_BOX_N = 3f
+        private const val SNAP_N = 0.016f      // ~1.6% of the canvas
+    }
+
+    var host: Host? = null
+
+    /** the exported area, in this view's pixels */
+    private val canvasRect = RectF(0f, 0f, 1f, 1f)
+    private var cw = 1
+    private var ch = 1
+
+    /** canvas size in view pixels (used to size preview decoding) */
+    val canvasW: Int get() { layoutCanvas(); return cw }
+    val canvasH: Int get() { layoutCanvas(); return ch }
+
+    /** the canvas rectangle in this view's pixels (read-only copy) */
+    fun canvasBounds(): RectF = RectF(canvasRect)
+
+    /**
+     * Space at each edge of this view that chrome covers (system bars, cutout,
+     * top bar, bottom controls) — the canvas is fitted inside the remainder.
+     * A small breathing margin is added on top so the selection handles and
+     * the label pill of an edge-hugging layer stay visible.
+     */
+    private var insetL = 0
+    private var insetT = 0
+    private var insetR = 0
+    private var insetB = 0
+    private var lastFitW = 0f
+    private var lastFitH = 0f
+    /** the host is told whenever the fitted canvas size changes (decode target, HUD) */
+    var onCanvasLayout: ((Int, Int) -> Unit)? = null
+
+    fun setViewportInsets(left: Int, top: Int, right: Int, bottom: Int) {
+        val l = left.coerceAtLeast(0); val t = top.coerceAtLeast(0)
+        val r = right.coerceAtLeast(0); val b = bottom.coerceAtLeast(0)
+        if (l == insetL && t == insetT && r == insetR && b == insetB) return
+        insetL = l; insetT = t; insetR = r; insetB = b
+        layoutCanvas()
+        invalidate()
+    }
+
+    /** current avoid-insets (l, t, r, b) in view pixels */
+    fun viewportInsets(): IntArray = intArrayOf(insetL, insetT, insetR, insetB)
+
+    private val ctxC = Compositor.Ctx()
+    private val chrome = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val chromeFill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val framePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val tmpRect = RectF()
+
+    private enum class Mode { NONE, MOVE, CORNER, EDGE, ROTATE, PINCH }
+    private var mode = Mode.NONE
+    private var downX = 0f
+    private var downY = 0f
+    private var startLayerId: String? = null
+    private var startCx = 0f; private var startCy = 0f
+    private var startWN = 0f; private var startHN = 0f; private var startRot = 0f
+    private var hsx = 0f; private var hsy = 0f          // grabbed handle (-1..1 per axis)
+    private var startDist = 0f
+    private var startAngle = 0f
+    private var startMidX = 0f; private var startMidY = 0f
+    private var moved = false
+    private var undoPushed = false
+    private var lastTapUp = 0L
+    private var lastTapX = 0f
+    private var lastTapY = 0f
+
+    /** long-press → radial menu at the finger */
+    private var longPressFired = false
+    private var pendingLongPress: Runnable? = null
+
+    override fun onMeasure(w: Int, h: Int) {
+        setMeasuredDimension(specSize(w, 360), specSize(h, 360))
+    }
+
+    private fun specSize(spec: Int, fallbackDp: Int): Int {
+        val size = MeasureSpec.getSize(spec)
+        return if (MeasureSpec.getMode(spec) == MeasureSpec.UNSPECIFIED || size <= 0)
+            UI.dp(context, fallbackDp) else size
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+        super.onSizeChanged(w, h, ow, oh)
+        layoutCanvas()
+    }
+
+    /**
+     * Contain-fit the project aspect inside the unobstructed part of this
+     * view, centred there. Pure function of (view size, insets, aspect):
+     *
+     *   avail = view − insets − breathing margin
+     *   scale = min(avail.w / canvasW, avail.h / canvasH)
+     *   canvas = (canvasW·scale, canvasH·scale) centred in avail
+     *
+     * If the insets ever leave less than a postage stamp (a tiny landscape
+     * phone with every panel open) the fit falls back to the whole view rather
+     * than collapsing to zero — the chrome then overlaps, but the picture
+     * never disappears.
+     */
+    private fun layoutCanvas() {
+        val p = host?.project ?: return
+        val vw = width.toFloat()
+        val vh = height.toFloat()
+        if (vw <= 1f || vh <= 1f) return
+        val box = ViewportFit.contain(
+            vw, vh, insetL, insetT, insetR, insetB,
+            pad = UI.dpf(context, 6f),
+            srcW = p.aspect.canvasW, srcH = p.aspect.canvasH,
+            minPx = UI.dpf(context, 96f))
+        canvasRect.set(box.left, box.top, box.right, box.bottom)
+        cw = box.width.roundToInt().coerceAtLeast(1)
+        ch = box.height.roundToInt().coerceAtLeast(1)
+        if (box.width != lastFitW || box.height != lastFitH) {
+            lastFitW = box.width; lastFitH = box.height
+            onCanvasLayout?.invoke(cw, ch)
+        }
+    }
+
+    fun refresh() { invalidate() }
+
+    // ----- unit mapping (canvas-local px <-> normalized) -----
+    private fun lx(e: MotionEvent, i: Int = 0): Float = e.getX(i) - canvasRect.left
+    private fun ly(e: MotionEvent, i: Int = 0): Float = e.getY(i) - canvasRect.top
+    private fun nx(px: Float): Float = px / cw
+    private fun ny(py: Float): Float = py / ch
+
+    override fun onDraw(canvas: Canvas) {
+        val hp = host ?: return
+        layoutCanvas()
+        val p = hp.project
+        canvas.drawColor(SURROUND)
+        canvas.save()
+        canvas.translate(canvasRect.left, canvasRect.top)
+        canvas.clipRect(0f, 0f, cw.toFloat(), ch.toFloat())
+        Compositor.draw(ctxC, canvas, cw, ch, p, { hp.bitmapOf(it) }, 0L,
+            hp.selectedId(), emptyMap())
+        canvas.restore()
+        // the exported area, marked exactly
+        framePaint.style = Paint.Style.STROKE
+        framePaint.strokeWidth = UI.dpf(context, 1f)
+        framePaint.color = Color.argb(90, 255, 255, 255)
+        canvas.drawRect(canvasRect, framePaint)
+        val selId = hp.selectedId()
+        canvas.save()
+        canvas.translate(canvasRect.left, canvasRect.top)
+        // unselected, visible, non-background sources: a subtle neutral
+        // hairline around the visible picture — enough to see WHERE a source
+        // is (and that it is a source) without competing with the selection
+        for (o in p.layers) {
+            if (o.id == selId || !o.visible || o.opacity <= 0.01f || LayerFit.isFullBleed(o)) continue
+            val r = chromeRectOf(o)
+            canvas.save()
+            canvas.rotate(o.rotDeg, r.centerX(), r.centerY())
+            framePaint.strokeWidth = UI.dpf(context, 1f)
+            framePaint.color = if (o.locked) Color.argb(70, 255, 255, 255) else Color.argb(48, 255, 255, 255)
+            canvas.drawRect(r, framePaint)
+            canvas.restore()
+        }
+        val l = selId?.let { p.layerById(it) }
+        // a hidden source is not on the canvas, so it has no frame either
+        if (l != null && l.visible) drawChrome(canvas, l)
+        canvas.restore()
+    }
+
+    /** the layer's BOX (what gestures resize) */
+    private fun rectOf(l: Layer): RectF {
+        val cxp = l.cx * cw
+        val cyp = l.cy * ch
+        tmpRect.set(cxp - l.wN * cw / 2f, cyp - l.hN * ch / 2f,
+            cxp + l.wN * cw / 2f, cyp + l.hN * ch / 2f)
+        return tmpRect
+    }
+
+    /**
+     * The layer's VISIBLE picture (box ∩ drawn frame, via Compositor.chromeRect
+     * — the same formula the renderer uses). A FIT layer that is pillarboxed
+     * inside its box gets its frame around the picture, not the dead space,
+     * so the border always sits on what the user actually sees. Falls back to
+     * the box while no frame has been decoded yet (stays grabbable).
+     */
+    private val chromeTmp = RectF()
+    private fun chromeRectOf(l: Layer): RectF {
+        val hp = host
+        Compositor.chromeRect(l, hp?.bitmapOf(l), cw, ch, chromeTmp)
+        return chromeTmp
+    }
+
+    /** longest side (px) of the visible frame — the decode target the engine needs */
+    fun visibleFrameMaxPx(l: Layer): Int {
+        val r = chromeRectOf(l)
+        return maxOf(r.width(), r.height()).toInt().coerceAtLeast(1)
+    }
+
+    /**
+     * Selection frame. One accent colour for every source type (UI.ACCENT),
+     * drawn in the layer's own rotated frame so it follows position, size,
+     * scale and rotation exactly:
+     *
+     *  - a 1dp dark contrast line under a crisp 2.5dp accent stroke (visible
+     *    on a white canvas AND on a dark one — selection is never colour-only:
+     *    it is also the handles and the label pill);
+     *  - four corner handles + four edge handles (filled accent, white rim)
+     *    and the rotation knob above the top edge;
+     *  - LOCKED: neutral grey, dashed, no handles (nothing can be dragged),
+     *    padlock in the label;
+     *  - hidden layers are never selected-drawn (see onDraw).
+     */
+    private fun drawChrome(canvas: Canvas, l: Layer) {
+        val r = RectF(chromeRectOf(l))
+        val locked = l.locked
+        val accent = if (locked) UI.FG2 else UI.ACCENT
+        canvas.save()
+        canvas.rotate(l.rotDeg, r.centerX(), r.centerY())
+
+        // 1. contrast underlay so the frame reads on light backgrounds
+        chrome.style = Paint.Style.STROKE
+        chrome.pathEffect = null
+        chrome.color = Color.argb(150, 0, 0, 0)
+        chrome.strokeWidth = UI.dpf(context, if (locked) 3f else 4.5f)
+        canvas.drawRect(r, chrome)
+        // 2. the accent frame itself
+        chrome.color = accent
+        chrome.strokeWidth = UI.dpf(context, if (locked) 1.5f else 2.5f)
+        if (locked) chrome.pathEffect = android.graphics.DashPathEffect(
+            floatArrayOf(UI.dpf(context, 6f), UI.dpf(context, 4f)), 0f)
+        canvas.drawRect(r, chrome)
+        chrome.pathEffect = null
+
+        val h = UI.dpf(context, 5.5f)
+        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = UI.dpf(context, 1.2f)
+        }
+        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(120, 0, 0, 0) }
+        if (!locked) {
+            // 3. handles: corners are squares, edges are small pills
+            chromeFill.color = accent
+            val rr = UI.dpf(context, 1.5f)
+            for (i in 0..2) {
+                for (j in 0..2) {
+                    if (i == 1 && j == 1) continue
+                    val ex = if (j == 0) r.left else if (j == 2) r.right else r.centerX()
+                    val ey = if (i == 0) r.top else if (i == 2) r.bottom else r.centerY()
+                    val corner = (i != 1) && (j != 1)
+                    val hw = if (corner || i == 1) h else h * 1.6f
+                    val hh = if (corner || j == 1) h else h * 1.6f
+                    val ew = if (corner) hw else if (i == 1) h * 0.6f else hw
+                    val eh = if (corner) hh else if (j == 1) h * 0.6f else hh
+                    tmpRect.set(ex - ew, ey - eh, ex + ew, ey + eh)
+                    tmpRect.offset(0f, UI.dpf(context, 1f))
+                    canvas.drawRoundRect(tmpRect, rr, rr, shadowPaint)
+                    tmpRect.offset(0f, -UI.dpf(context, 1f))
+                    canvas.drawRoundRect(tmpRect, rr, rr, chromeFill)
+                    canvas.drawRoundRect(tmpRect, rr, rr, borderPaint)
+                }
+            }
+            // 4. rotation handle above top-centre
+            val topY = r.top - UI.dpf(context, 18f)
+            val cx = r.centerX()
+            chrome.strokeWidth = UI.dpf(context, 1.5f)
+            chrome.color = accent
+            canvas.drawLine(cx, r.top, cx, topY, chrome)
+            chromeFill.color = accent
+            canvas.drawCircle(cx, topY + UI.dpf(context, 1f), h * 1.35f, shadowPaint)
+            canvas.drawCircle(cx, topY, h * 1.35f, chromeFill)
+            canvas.drawCircle(cx, topY, h * 1.35f, borderPaint)
+            chromeFill.color = Color.WHITE
+            canvas.drawCircle(cx, topY, h * 0.55f, chromeFill)
+        }
+
+        // 5. label pill (type + name + state) above the frame: selection is
+        //    identified by text as well, never by the colour alone
+        val state = when {
+            locked -> "  🔒 LOCKED"
+            else -> ""
+        }
+        val label = (if (l.isLive()) "LIVE  " else "") + l.name.ifBlank { l.type.label } + state
+        val padH = UI.dpf(context, 8f)
+        val padV = UI.dpf(context, 3f)
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; textSize = UI.dpf(context, 10f)
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+        }
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(215, 18, 20, 26) }
+        val edgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = accent; style = Paint.Style.STROKE; strokeWidth = UI.dpf(context, 1f)
+        }
+        val tw = textPaint.measureText(label)
+        val th = textPaint.textSize
+        val bw = tw + padH * 2
+        val bh = th + padV * 2 + UI.dpf(context, 2f)
+        val cx = r.centerX()
+        val bx = cx - bw / 2
+        val knobTop = if (locked) r.top - UI.dpf(context, 6f) else r.top - UI.dpf(context, 18f) - h * 1.8f
+        var by = knobTop - bh
+        // keep the pill inside the canvas when the layer touches the top edge
+        if (by < UI.dpf(context, 2f)) by = r.top + UI.dpf(context, 6f)
+        val rr2 = UI.dpf(context, 10f)
+        canvas.drawRoundRect(bx, by, bx + bw, by + bh, rr2, rr2, bgPaint)
+        canvas.drawRoundRect(bx, by, bx + bw, by + bh, rr2, rr2, edgePaint)
+        canvas.drawText(label, bx + padH, by + bh - padV - UI.dpf(context, 1f), textPaint)
+        canvas.restore()
+    }
+
+    // ---------- hit testing ----------
+
+    /** point in the layer's own (unrotated) frame, relative to its center */
+    private fun toLayerLocal(x: Float, y: Float, l: Layer, r: RectF): Pair<Float, Float> {
+        val ang = Math.toRadians((-l.rotDeg).toDouble())
+        val dx = x - r.centerX(); val dy = y - r.centerY()
+        return Pair((dx * cos(ang) - dy * sin(ang)).toFloat(),
+            (dx * sin(ang) + dy * cos(ang)).toFloat())
+    }
+
+    private fun hitHandle(x: Float, y: Float, l: Layer): String? {
+        val r = chromeRectOf(l)   // handles sit on the visible frame
+        val halfW = r.width() / 2f
+        val halfH = r.height() / 2f
+        val (px, py) = toLayerLocal(x, y, l, r)
+        // Finger target: 24dp on normal layers, shrinking for small PiPs so a
+        // tiny layer is not nothing-but-handles (the "cannot drag the PiP"
+        // bug), with a 10dp floor so handles stay grabbable.
+        val touch = min(UI.dpf(context, 24f), min(halfW, halfH) * 0.9f)
+            .coerceAtLeast(UI.dpf(context, 10f))
+        if (touch <= 0f) return null
+        // rotate knob above the top edge
+        val knobY = -halfH - UI.dpf(context, 18f)
+        if (abs(px) <= touch && abs(py - knobY) <= touch) return "ROT"
+        val onV = when {
+            abs(px + halfW) <= touch -> -1f
+            abs(px - halfW) <= touch -> 1f
+            else -> 0f
+        }
+        val onH = when {
+            abs(py + halfH) <= touch -> -1f
+            abs(py - halfH) <= touch -> 1f
+            else -> 0f
+        }
+        val midX = abs(px) <= touch
+        val midY = abs(py) <= touch
+        return when {
+            onV == -1f && onH == -1f -> "TL"
+            onV == 1f && onH == -1f -> "TR"
+            onV == -1f && onH == 1f -> "BL"
+            onV == 1f && onH == 1f -> "BR"
+            midX && onH == -1f -> "TC"
+            midX && onH == 1f -> "BC"
+            onV == -1f && midY -> "ML"
+            onV == 1f && midY -> "MR"
+            else -> null
+        }
+    }
+
+    /** returns top-most layer whose box contains the point (canvas-local) */
+    /** topmost-first, rotation-aware, hidden skipped — see LayerFit.hitTest */
+    private fun layerAt(x: Float, y: Float): Layer? {
+        val hp = host ?: return null
+        return LayerFit.hitTest(hp.project.layers, x, y, cw, ch)
+    }
+
+    // ---------- gestures ----------
+
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        val hp = host ?: return false
+        val p = hp.project
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                moved = false
+                undoPushed = false
+                downX = lx(e); downY = ly(e)
+                scheduleLongPress(e.x, e.y, lx(e), ly(e))
+                val selId = hp.selectedId()
+                val sel = selId?.let { p.layerById(it) }
+                // rotation / resize handles on the current selection first
+                if (sel != null && !sel.locked && sel.visible) {
+                    val handle = hitHandle(downX, downY, sel)
+                    if (handle != null) {
+                        startGesture(sel, handle)
+                        return true
+                    }
+                }
+                val hit = layerAt(downX, downY)
+                if (hit != null) {
+                    if (hit.id != selId) hp.select(hit.id)
+                    if (hit.locked) {
+                        mode = Mode.NONE; startLayerId = null
+                        hp.onLockedTap(hit)
+                        return true
+                    }
+                    startGesture(hit, "MOVE")
+                } else {
+                    hp.onTapEmpty()
+                }
+                return true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                cancelRadialLongPress()
+                val l = startLayerId?.let { p.layerById(it) }
+                if (l != null && !l.locked && e.pointerCount == 2 && mode != Mode.ROTATE) {
+                    mode = Mode.PINCH
+                    val x0 = lx(e, 0); val y0 = ly(e, 0)
+                    val x1 = lx(e, 1); val y1 = ly(e, 1)
+                    startDist = hypot(x1 - x0, y1 - y0).coerceAtLeast(1f)
+                    startAngle = atan2(y1 - y0, x1 - x0)
+                    startMidX = (x0 + x1) / 2f; startMidY = (y0 + y1) / 2f
+                    startCx = l.cx; startCy = l.cy
+                    startWN = l.wN; startHN = l.hN
+                    startRot = l.rotDeg
+                }
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (hypot(lx(e) - downX, ly(e) - downY) > UI.dpf(context, 12f)) cancelRadialLongPress()
+                if (longPressFired) return true
+                if (mode == Mode.NONE) return true
+                val l = startLayerId?.let { p.layerById(it) } ?: return true
+                val x = lx(e); val y = ly(e)
+                when (mode) {
+                    Mode.MOVE -> {
+                        if (!LayerFit.isFullBleed(l)) {
+                            l.cx = startCx + nx(x - downX)
+                            l.cy = startCy + ny(y - downY)
+                            snapMove(l)
+                            LayerFit.clampInside(l)
+                            if (hypot(x - downX, y - downY) > UI.dpf(context, 3f)) touchMoved()
+                        }
+                    }
+                    Mode.PINCH -> if (e.pointerCount >= 2) { pinchMove(l, e); touchMoved() }
+                    Mode.CORNER, Mode.EDGE -> { resizeTo(l, x, y); touchMoved() }
+                    Mode.ROTATE -> { rotateTo(l, x, y); touchMoved() }
+                    else -> { }
+                }
+                invalidate()
+                return true
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (mode == Mode.PINCH) {
+                    mode = Mode.MOVE
+                    val l = startLayerId?.let { p.layerById(it) }
+                    val keep = if (e.actionIndex == 0) 1 else 0
+                    if (l != null && e.pointerCount > keep) {
+                        downX = lx(e, keep); downY = ly(e, keep)
+                        startCx = l.cx; startCy = l.cy
+                    }
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                cancelRadialLongPress()
+                if (longPressFired) {
+                    longPressFired = false
+                    mode = Mode.NONE; startLayerId = null
+                    return true
+                }
+                if (moved) host?.onTransform()
+                else {
+                    // clean second tap on a layer: text edits itself, media ignores
+                    // (double-tap-hide was removed: too easy to trigger by accident)
+                    val x = lx(e); val y = ly(e)
+                    val now = android.os.SystemClock.uptimeMillis()
+                    val hit = layerAt(x, y)
+                    if (hit != null && now - lastTapUp < 320L &&
+                        hypot(x - lastTapX, y - lastTapY) < UI.dpf(context, 36f)) {
+                        lastTapUp = 0L
+                        hp.onDoubleTap(hit)
+                    } else {
+                        lastTapUp = now
+                        lastTapX = x; lastTapY = y
+                    }
+                }
+                mode = Mode.NONE
+                startLayerId = null
+                invalidate()
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                cancelRadialLongPress()
+                longPressFired = false
+                if (moved) host?.onTransform()
+                mode = Mode.NONE
+                startLayerId = null
+                invalidate()
+                return true
+            }
+        }
+        return true
+    }
+
+    // ---------- long press → radial menu ----------
+
+    private fun scheduleLongPress(rawX: Float, rawY: Float, cxp: Float, cyp: Float) {
+        cancelRadialLongPress()
+        longPressFired = false
+        val r = Runnable {
+            // a drag/resize already in progress must not be hijacked
+            if (moved) return@Runnable
+            longPressFired = true
+            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            mode = Mode.NONE
+            startLayerId = null
+            host?.onLongPressCanvas(layerAt(cxp, cyp), rawX, rawY)
+        }
+        pendingLongPress = r
+        postDelayed(r, 460L)
+    }
+
+    private fun cancelRadialLongPress() {
+        pendingLongPress?.let { removeCallbacks(it) }
+        pendingLongPress = null
+    }
+
+    private fun startGesture(l: Layer, m: String) {
+        mode = when (m) {
+            "MOVE" -> Mode.MOVE
+            "ROT" -> Mode.ROTATE
+            "TL", "TR", "BL", "BR" -> Mode.CORNER
+            else -> Mode.EDGE
+        }
+        val r = rectOf(l)
+        hsx = when (m) {
+            "TL", "BL", "ML" -> -1f
+            "TR", "BR", "MR" -> 1f
+            else -> 0f
+        }
+        hsy = when (m) {
+            "TL", "TR", "TC" -> -1f
+            "BL", "BR", "BC" -> 1f
+            else -> 0f
+        }
+        if (mode == Mode.CORNER || mode == Mode.EDGE) {
+            // re-anchor the down point to the handle so the first move is not a jump
+            val ang = Math.toRadians(l.rotDeg.toDouble())
+            val ca = cos(ang).toFloat(); val sa = sin(ang).toFloat()
+            val ox = hsx * r.width() / 2f
+            val oy = hsy * r.height() / 2f
+            downX = r.centerX() + ox * ca - oy * sa
+            downY = r.centerY() + ox * sa + oy * ca
+        }
+        startLayerId = l.id
+        startCx = l.cx; startCy = l.cy
+        startWN = l.wN; startHN = l.hN
+        startRot = l.rotDeg
+    }
+
+    /** one undo snapshot per gesture, taken on the first real movement */
+    private fun touchMoved() {
+        if (!undoPushed) { undoPushed = true; host?.onChanged() }
+        moved = true
+        host?.onTransform()
+    }
+
+    /**
+     * True handle dragging: the grabbed corner/edge follows the finger while the
+     * OPPOSITE side stays anchored, in the layer's own rotated frame.
+     *
+     * CORNER handles scale the whole box proportionally, so a camera PiP can
+     * never be squashed. EDGE handles stretch ONLY that side — width or height
+     * changes independently, so dragging a side handle distorts just that axis.
+     */
+    private fun resizeTo(l: Layer, x: Float, y: Float) {
+        val startWpx = (startWN * cw).coerceAtLeast(1f)
+        val startHpx = (startHN * ch).coerceAtLeast(1f)
+        val cx0 = startCx * cw
+        val cy0 = startCy * ch
+        val ang = Math.toRadians(l.rotDeg.toDouble())
+        val ca = cos(ang).toFloat(); val sa = sin(ang).toFloat()
+
+        // anchor = the side opposite the grabbed handle
+        val axLocal = -hsx * startWpx / 2f
+        val ayLocal = -hsy * startHpx / 2f
+        val ax = cx0 + axLocal * ca - ayLocal * sa
+        val ay = cy0 + axLocal * sa + ayLocal * ca
+
+        // pointer in the layer's unrotated frame, relative to the anchor
+        val cn = cos(-ang).toFloat(); val sn = sin(-ang).toFloat()
+        val dx = x - ax; val dy = y - ay
+        val px = dx * cn - dy * sn
+        val py = dx * sn + dy * cn
+
+        val minPx = UI.dpf(context, 24f)
+        var newW = if (hsx != 0f) abs(px).coerceAtLeast(minPx) else startWpx
+        var newH = if (hsy != 0f) abs(py).coerceAtLeast(minPx) else startHpx
+        // Corner handles now stretch each axis independently too (crop-style),
+        // same as edge handles. Only a live camera PiP keeps its aspect ratio
+        // locked on corner-drag, since squashing a live feed looks broken —
+        // everything else (video/image/text) is free to distort from any
+        // handle, matching what "crop" means in every other editor.
+        if (l.isLive() && hsx != 0f && hsy != 0f) {
+            val k = (newW / startWpx + newH / startHpx) / 2f
+            newW = startWpx * k
+            newH = startHpx * k
+        }
+        newW = newW.coerceIn(minPx, cw * MAX_BOX_N)
+        newH = newH.coerceIn(minPx, ch * MAX_BOX_N)
+
+        val sgx = if (px >= 0f) 1f else -1f
+        val sgy = if (py >= 0f) 1f else -1f
+        val mxLocal = if (hsx != 0f) sgx * newW / 2f else 0f
+        val myLocal = if (hsy != 0f) sgy * newH / 2f else 0f
+        l.wN = newW / cw
+        l.hN = newH / ch
+        l.cx = (ax + mxLocal * ca - myLocal * sa) / cw
+        l.cy = (ay + mxLocal * sa + myLocal * ca) / ch
+    }
+
+    private fun rotateTo(l: Layer, x: Float, y: Float) {
+        val cx = l.cx * cw; val cy = l.cy * ch
+        val a0 = atan2(downY - cy, downX - cx)
+        val a1 = atan2(y - cy, x - cx)
+        var deg = startRot + Math.toDegrees((a1 - a0).toDouble()).toFloat()
+        deg = ((deg % 360f) + 360f) % 360f
+        for (t in floatArrayOf(0f, 90f, 180f, 270f)) if (abs(deg - t) < 5f) deg = t
+        l.rotDeg = deg
+    }
+
+    /** two fingers: scale + rotate around the pinch midpoint, layer follows it */
+    private fun pinchMove(l: Layer, e: MotionEvent) {
+        val x0 = lx(e, 0); val y0 = ly(e, 0)
+        val x1 = lx(e, 1); val y1 = ly(e, 1)
+        val dist = hypot(x1 - x0, y1 - y0).coerceAtLeast(1f)
+        val angle = atan2(y1 - y0, x1 - x0)
+        val sc = (dist / startDist).coerceIn(0.15f, 6f)
+        val rotDelta = Math.toDegrees((angle - startAngle).toDouble()).toFloat()
+        val vx = startCx * cw - startMidX
+        val vy = startCy * ch - startMidY
+        val a = Math.toRadians(rotDelta.toDouble())
+        val ca = cos(a).toFloat(); val sa = sin(a).toFloat()
+        l.cx = (startMidX + (vx * ca - vy * sa) * sc) / cw
+        l.cy = (startMidY + (vx * sa + vy * ca) * sc) / ch
+        l.wN = (startWN * sc).coerceIn(MIN_BOX_N, MAX_BOX_N)
+        l.hN = (startHN * sc).coerceIn(MIN_BOX_N, MAX_BOX_N)
+        l.rotDeg = (((startRot + rotDelta) % 360f) + 360f) % 360f
+        LayerFit.clampInside(l, 0.25f)
+    }
+
+    /**
+     * Snap the layer to the canvas centre/edges and to sibling edges/centres.
+     * Thresholds are NORMALIZED — a dp value here would be ~14x the whole
+     * canvas and would glue every layer to the centre on every drag.
+     */
+    private fun snapMove(l: Layer) {
+        val halfW = l.wN / 2f
+        val halfH = l.hN / 2f
+        if (l.wN < 0.9f) {
+            val xs = ArrayList<Float>(10)
+            xs.add(0.5f); xs.add(halfW); xs.add(1f - halfW)
+            for (o in host?.project?.layers ?: emptyList()) {
+                if (o.id == l.id) continue
+                xs.add(o.cx + o.wN / 2f + halfW)
+                xs.add(o.cx - o.wN / 2f - halfW)
+                xs.add(o.cx)
+            }
+            l.cx = nearest(l.cx, xs)
+        }
+        if (l.hN < 0.9f) {
+            val ys = ArrayList<Float>(10)
+            ys.add(0.5f); ys.add(halfH); ys.add(1f - halfH)
+            for (o in host?.project?.layers ?: emptyList()) {
+                if (o.id == l.id) continue
+                ys.add(o.cy + o.hN / 2f + halfH)
+                ys.add(o.cy - o.hN / 2f - halfH)
+                ys.add(o.cy)
+            }
+            l.cy = nearest(l.cy, ys)
+        }
+    }
+
+    private fun nearest(v: Float, targets: List<Float>): Float {
+        var best = v
+        var bestD = SNAP_N
+        for (t in targets) {
+            val d = abs(v - t)
+            if (d < bestD) { bestD = d; best = t }
+        }
+        return best
+    }
+}
