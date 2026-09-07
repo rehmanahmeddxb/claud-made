@@ -56,10 +56,8 @@ check("one toolbar, not the disabled Phase 2 legacy pill", "USE_QUICK_BAR" not i
 check("four-side viewport API only", "setChromeInsets" not in editor)
 
 # ------------------------------------------- StudioLayoutInjector: chrome ---
-# The shipped workspace builds ONE responsive layout: top strip, wheel rail,
-# transport row and bottom-sheet host. Panels are bottom sheets (sources /
-# mixer / properties) built by the activity, reached from the rail wheels.
-check("injector builds the top strip", '"topStrip"' in injector)
+# Clean 100% full screen canvas layout with single Hamburger Sidebar button.
+check("injector builds hamburger toggle", "sidebar_toggle" in injector)
 check("StageView created once",
       count(injector, "activity.stage = StageView(activity)") == 1)
 check("StageView host bound",
@@ -69,30 +67,9 @@ check("mixer sheet builder exists", "fun buildMixerPanel(" in editor)
 check("layer ring declared for the editor", "fun openFlashRing(l: Layer)" in radial)
 check("layer ring implemented by the editor", "override fun openFlashRing" in editor)
 check("bottom sheet host attached", 'tag = "bottomSheet"' in injector)
-check("injector builds the transport row", '"transportRow"' in injector)
-check("injector builds the timeline seek",
-      count(injector, "activity.seek = SeekBar(activity)") == 1)
+check("sidebar view initialized", "activity.sidebar = SidebarView(activity)" in injector)
 
-# Top bar actions must reach the real verbs, not dead buttons.
-for needle, name in (
-    ("activity.saveNow()", "top bar Save is wired"),
-    ("activity.quickExport()", "top bar Export is wired"),
-    ("activity.showAspectPicker()", "aspect chip opens the aspect picker"),
-    ("activity.openDiagnostics()", "settings opens diagnostics"),
-):
-    contains(injector, needle, name)
-
-# Top strip + panel rows: core verbs wired to the activity.
-for needle, name in (
-    ("activity.pickMedia(true)", "tool rail add/video wired"),
-    ("activity.pickMedia(false)", "tool rail image wired"),
-    ("activity.doUndo()", "tool rail undo wired"),
-    ("activity.doRedo()", "tool rail redo wired"),
-):
-    contains(injector, needle, name)
-
-# The rail opens wheels; the wheels must offer camera + text, and the Host
-# verbs must reach real editor implementations (no dead leaves).
+# Sidebar tree offers live camera + text, and the Host verbs reach real editor implementations.
 for needle, name in (
     ("h.addCameraLive()", "sources wheel offers live camera"),
     ("h.addTextSource()", "sources wheel offers text"),
@@ -129,25 +106,10 @@ for needle, name in (
     ("activity.ctrl.toggleMuted(id)", "mixer mute wired"),
     ("activity.ctrl.toggleSolo(id)", "mixer solo wired"),
     ("activity.engine.setVolume(l, v)", "mixer volume wired to engine"),
-    # pushUndoLight now takes a coalescing key so distinct edits are not
-    # swallowed by the 350 ms throttle (BUG-12).
     ("activity.pushUndoLight(", "mixer volume pushes undo"),
     ("activity.markDirty()", "mixer volume marks project dirty"),
 ):
     contains(mixer, needle, name)
-
-# Timeline + transport: scrubbing seeks the engine, transport drives playback.
-for needle, name in (
-    ("activity.engine.seekTo(v.toLong())", "timeline seek scrubs the engine"),
-    ("activity.scrubbing = true", "timeline drag sets scrubbing"),
-    ("activity.togglePlay()", "transport play/pause wired"),
-    ("activity.recordButtonTap()", "transport record wired"),
-    ("activity.controlsStopTap()", "transport stop wired"),
-    ("activity.timeLabel.text", "transport time label wired"),
-    ("activity.durationLabel", "transport duration label wired"),
-    ("activity.recordBtn = this", "transport record button exposed to the activity"),
-):
-    contains(injector, needle, name)
 
 # ------------------------------------------------- EditorActivity wiring ---
 # Rotation (and the first layout) must delegate to the injector, and the

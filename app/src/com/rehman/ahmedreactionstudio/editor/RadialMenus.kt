@@ -43,6 +43,7 @@ object RadialMenus {
          */
         fun deleteSource(l: Layer)
         fun hideSource(l: Layer)
+        fun duplicateSource(l: Layer)
 
         // add
         fun addVideo()
