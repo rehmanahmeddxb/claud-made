@@ -387,6 +387,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         refreshContextBar()
         updateRecordButton()
         updateRecChip()
+        // rotation rebuilds the chrome on fresh views — rebuild the open sheet's
+        // content too (advanced sheet re-opens for the selection, if any)
+        val tab = sheetTab
+        if (tab == "sources" || tab == "mixer") setSheet(tab)
+        else if (tab == "adv") {
+            val l = selectedId?.let { proj?.layerById(it) }
+            if (l != null) openAdvancedSheet(l) else setSheet(null)
+        }
         stage.post { syncPreviewTarget() }
         stage.refresh()
     }
@@ -765,6 +773,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         if (tab == null) {
             sv.visibility = View.GONE
             divider.visibility = View.GONE
+            sheet.visibility = View.GONE
             refreshTabBar()
             updateSourceStrip()
             sheet.post { updateStageInsets() }
@@ -778,14 +787,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         head.gravity = Gravity.CENTER_VERTICAL
         head.setPadding(UI.dp(this, 14), UI.dp(this, 6), UI.dp(this, 6), 0)
         val ht = TextView(this)
-        ht.text = when (tab) { "sources" -> "Layers"; "mixer" -> "Audio mixer"; "export" -> "Export"; else -> tab }
+        ht.text = when (tab) { "sources" -> "Sources"; "mixer" -> "Audio mixer"; "export" -> "Export"; else -> tab }
         ht.setTextColor(UI.FG)
         ht.textSize = 13f
         ht.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         ht.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         head.addView(ht)
         val hx = IconBtn(this)
-        hx.layoutParams = IconBtn.sized(this, 48)
+        hx.layoutParams = IconBtn.sizedLinear(this, 48)
         hx.setIcon(R.drawable.ic_close, UI.FG, "Close panel")
         hx.setOnClickListener { setSheet(null) }
         head.addView(hx)
@@ -795,6 +804,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             "mixer" -> buildMixerPanel()
             "export" -> buildExportPanel()
         }
+        sheet.visibility = View.VISIBLE
         sv.visibility = View.VISIBLE
         divider.visibility = View.VISIBLE
         refreshTabBar()
@@ -809,7 +819,63 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     // ================= panel: SOURCES dock =================
 
-    private fun buildSourcesPanel(vararg args: Any?) { }
+    /**
+     * P1-2: sources list sheet — selection steppers (they reach hidden sources
+     * too), the SourceDock rows (tap select · eye · mute · drag-reorder ·
+     * long-press properties) and an Add entry point.
+     */
+    private fun buildSourcesPanel() {
+        val p = proj ?: return
+        val step = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(UI.dp(this@EditorActivity, 14), 0, UI.dp(this@EditorActivity, 14), 0)
+        }
+        val selName = TextView(this).apply {
+            gravity = Gravity.CENTER
+            setTextColor(UI.FG)
+            textSize = 13f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        fun syncStepLabel() {
+            selName.text = selectedId?.let { proj?.layerById(it)?.name?.ifBlank { "Source" } }
+                ?: "No source selected"
+        }
+        syncStepLabel()
+        val prev = UI.chip(this, "\u2039 Prev").apply {
+            contentDescription = "Select previous source"
+            setOnClickListener { stepSelection(-1); syncStepLabel(); rebuildDock() }
+        }
+        val next = UI.chip(this, "Next \u203a").apply {
+            contentDescription = "Select next source"
+            setOnClickListener { stepSelection(1); syncStepLabel(); rebuildDock() }
+        }
+        step.addView(prev)
+        step.addView(selName)
+        step.addView(next)
+        panelContent.addView(step)
+        // the dock list itself (rebuildDock repopulates rows incl. empty state)
+        (dockContainer.parent as? ViewGroup)?.removeView(dockContainer)
+        dockContainer.layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        panelContent.addView(dockContainer)
+        rebuildDock()
+        val add = UI.btn(this,
+            if (p.layers.isEmpty()) "+  Add your first source" else "+  Add source",
+            accent = true).apply {
+            contentDescription = "Add a source"
+            setOnClickListener {
+                setSheet(null)
+                openWheelLevel(RadialMenus.add(this@EditorActivity), -1f, -1f)
+            }
+        }
+        val alp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(this, 48))
+        alp.setMargins(UI.dp(this, 14), UI.dp(this, 10), UI.dp(this, 14), UI.dp(this, 14))
+        add.layoutParams = alp
+        panelContent.addView(add)
+    }
 
     private fun stepSelection(dir: Int) {
         val p = proj ?: return
@@ -821,7 +887,70 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     // ================= panel: MIXER (sliders need a sheet) =================
 
-    private fun buildMixerPanel(vararg args: Any?) { }
+    /**
+     * P1-2: mixer sheet — per-clip mute/solo/volume with real sliders (the Audio
+     * wheel keeps quick stepped control; sliders live only here).
+     */
+    private fun buildMixerPanel() {
+        val p = proj ?: return
+        val clips = p.layers.filter { it.isClip() }
+        if (clips.isEmpty()) {
+            val t = UI.label(this, "No audio sources yet — add a video or camera.",
+                dim = true, size = 12.5f)
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.setMargins(UI.dp(this, 16), UI.dp(this, 10), UI.dp(this, 16), UI.dp(this, 14))
+            t.layoutParams = lp
+            panelContent.addView(t)
+            return
+        }
+        for (l in clips.asReversed()) {
+            val muted = ctrl.effectiveMuted(l)
+            val head = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(UI.dp(this@EditorActivity, 16), UI.dp(this@EditorActivity, 8),
+                    UI.dp(this@EditorActivity, 16), 0)
+            }
+            val nm = TextView(this).apply {
+                text = l.name.ifBlank { l.type.label }
+                setTextColor(UI.FG)
+                textSize = 13f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                layoutParams = LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            head.addView(nm)
+            val mute = UI.chip(this, if (muted) "Unmute" else "Mute").apply {
+                contentDescription = (if (muted) "Unmute " else "Mute ") + l.name
+                setOnClickListener { ctrl.toggleMuted(l.id); setSheet("mixer") }
+            }
+            head.addView(mute)
+            val solo = UI.chip(this, if (l.solo) "Solo \u2713" else "Solo").apply {
+                contentDescription = "Solo " + l.name
+                setOnClickListener { ctrl.toggleSolo(l.id); setSheet("mixer") }
+            }
+            val slp = solo.layoutParams as LinearLayout.LayoutParams
+            slp.setMargins(UI.dp(this@EditorActivity, 8), 0, 0, 0)
+            solo.layoutParams = slp
+            head.addView(solo)
+            panelContent.addView(head)
+            panelContent.addView(sliderRow("Volume  ${(l.volume * 100).toInt()}%",
+                (l.volume * 100).toInt()) { v ->
+                pushUndoLight()
+                if (engineReady()) engine.setVolume(l, v / 100f) else l.volume = v / 100f
+                markDirty()
+            })
+        }
+        val note = UI.label(this, "Solo = only soloed sources are heard.",
+            dim = true, size = 10.5f)
+        val nlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT)
+        nlp.setMargins(UI.dp(this, 16), UI.dp(this, 6), UI.dp(this, 16), UI.dp(this, 14))
+        note.layoutParams = nlp
+        panelContent.addView(note)
+    }
 
     /**
      * (Re)create the live-camera / source dock and its callbacks. The layout
@@ -1327,6 +1456,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      * replaced on the fresh SeekBar and state re-syncs below. onTick() keeps
      * time/seek/play-icon fresh at ~20 Hz while playing.
      */
+    /** P1-2: transport list button toggles the sources sheet. */
+    fun toggleSourcesSheet() {
+        if (sheetTab == "sources") setSheet(null) else openDockPanel()
+    }
+
     internal fun bindTransport() {
         seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
@@ -2117,9 +2251,32 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         rootFrame.post { refreshViewportInsets() }
     }
 
+    /**
+     * P1-2: cap the bottom sheet at 45% of the root height so the canvas keeps
+     * the majority of the screen (Rule 8). WRAP_CONTENT when small; fixed max +
+     * internal scroll when tall. Stable: layoutParams rewritten only on change.
+     */
+    private fun capPanelHeight() {
+        if (!this::sheet.isInitialized || !this::rootFrame.isInitialized) return
+        if (sheet.visibility != View.VISIBLE) return
+        val rootH = rootFrame.height
+        if (rootH <= 0) return
+        val maxH = (rootH * 0.45f).toInt().coerceAtLeast(UI.dp(this, 200))
+        val lp = sheet.layoutParams as? FrameLayout.LayoutParams ?: return
+        val measured = sheet.height
+        if (measured > maxH && lp.height != maxH) {
+            lp.height = maxH
+            sheet.layoutParams = lp
+        } else if (measured in 1..maxH && lp.height != ViewGroup.LayoutParams.WRAP_CONTENT) {
+            lp.height = ViewGroup.LayoutParams.WRAP_CONTENT
+            sheet.layoutParams = lp
+        }
+    }
+
     private fun refreshViewportInsets() {
         if (!this::stage.isInitialized || !this::rootFrame.isInitialized) return
         if (rootFrame.width <= 0 || rootFrame.height <= 0) return
+        capPanelHeight()
         fun visibleBottom(tag: String): Int {
             val v = rootFrame.findViewWithTag<View>(tag) ?: return 0
             return if (v.visibility == View.VISIBLE) v.bottom else 0
@@ -2133,6 +2290,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val dock = rootFrame.findViewWithTag<View>("bottomDock")
         if (dock != null && dock.visibility == View.VISIBLE)
             insetB = (rootFrame.height - dock.top).coerceAtLeast(0)
+        val sheetV = rootFrame.findViewWithTag<View>("bottomSheet")
+        if (sheetV != null && sheetV.visibility == View.VISIBLE)
+            insetB = maxOf(insetB, (rootFrame.height - sheetV.top).coerceAtLeast(0))
         val breath = UI.dp(this, 6)
         stage.setViewportInsets(0,
             if (insetT > 0) insetT + breath else 0,
@@ -2698,7 +2858,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         UI.toast(this, "Mixer sheet is being restored — Audio ring opened")
     }
     override fun openExportPanel() {
-        if (sheetAttached()) { setSheet("export"); return }
+        // P1-2: export settings live in the dialog (P0-5), not a sheet — even
+        // now that the sheet host exists. One home for export settings.
         showExportSettings()
     }
     override fun openAdvanced(l: Layer) { openAdvancedSheet(l) }

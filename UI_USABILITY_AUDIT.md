@@ -649,6 +649,16 @@ Lone 40dp back button replaced by a full top strip: 48dp back, project name + me
 
 **On-device verify:** fresh install → coach on first editor open, never again; empty project → tappable hint pill, opens Sources; add source → hint gone; rail labels legible, rail doesn't cover canvas.
 
+### 2026-09-07 — P1-2 + P1-3 fixed (bottom sheets: sources list, mixer, properties)
+
+- **Sheet host attached:** rounded-top bottom sheet (grab handle, 45% height cap via `capPanelHeight`, Back/✕ close, rotation-safe rebuild incl. re-opening the properties sheet for the selection). Canvas fits above it through the P0-4 insets; snackbar floats above it.
+- **P1-2 sources sheet** (transport ≡ toggle, 1 tap): ‹/› selection steppers (reach hidden sources too), revived `SourceDock` rows (tap-select, eye, mute, live status, drag-reorder, long-press → properties), Add entry point. Header renamed Layers→Sources (one term).
+- **P1-2 mixer sheet** (Audio wheel → "Mixer panel"): per-clip mute/solo + real volume sliders. Wheel keeps stepped control; sliders live only here.
+- **P1-3 properties:** the fully-written `openAdvancedSheet` (appearance, playback/audio, text, arrange incl. 3×3 anchors, danger+Undo) now opens for real via source-ring "Advanced…" and dock long-press — the P0-1 fallback auto-healed as designed. Export settings stay in the P0-5 dialog (pinned explicitly — one home).
+- **Latent crash fixed:** `IconBtn.sized()` returns `FrameLayout.LayoutParams` but was set on children of `LinearLayout` rows in 3 places (dock eye/mute, sheet ✕) — harmless while detached, would have crashed measure the moment sheets went live. New `sizedLinear()` helper used at all 3 sites; zero `sized(` misuses remain.
+
+**On-device verify:** ≡ opens/closes sources; eye/mute/status/drag/long-press all work; steppers select hidden sources; mixer sliders ride volume live; Advanced… shows full sheet (opacity/volume/arrange/text/delete+Undo); sheet never covers >45% height; rotate with each sheet open; Back closes sheet before exiting.
+
 ---
 
 *End of audit. Next step: confirm P0-1 on a device (2 minutes), then work P0 in the suggested order. Say the word and I'll start implementing — P0-1 + P0-6 + quick wins first.*

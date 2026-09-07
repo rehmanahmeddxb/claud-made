@@ -10,6 +10,7 @@ import android.view.View
 import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.LinearLayout
 import com.rehman.ahmedreactionstudio.R
 import com.rehman.ahmedreactionstudio.util.UI
 
@@ -111,5 +112,13 @@ class IconBtn(context: Context) : FrameLayout(context) {
         /** standard size for quick-control buttons */
         fun sized(ctx: Context, dpSize: Int = 42): LayoutParams =
             LayoutParams(UI.dp(ctx, dpSize), UI.dp(ctx, dpSize))
+
+        /**
+         * Same, for buttons inside a LinearLayout row. LP class must match the
+         * parent — a FrameLayout.LayoutParams on a LinearLayout child crashes
+         * measure (P1-2 sheet-crash fix).
+         */
+        fun sizedLinear(ctx: Context, dpSize: Int = 44): LinearLayout.LayoutParams =
+            LinearLayout.LayoutParams(UI.dp(ctx, dpSize), UI.dp(ctx, dpSize))
     }
 }

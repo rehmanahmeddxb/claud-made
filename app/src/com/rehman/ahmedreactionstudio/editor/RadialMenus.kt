@@ -335,6 +335,8 @@ object RadialMenus {
     ) {
         val p = h.project
         val out = ArrayList<RadialMenuView.Item>()
+        // P1-2: sliders live in the mixer sheet (the wheel keeps stepped control).
+        out.add(item(R.drawable.ic_volume, "Mixer panel") { h.openMixerPanel() })
         val live = p.layers.firstOrNull { it.isLive() }
         if (live != null) {
             out.add(folder(R.drawable.ic_camera, "Mic",

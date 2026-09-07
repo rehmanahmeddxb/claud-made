@@ -203,6 +203,12 @@ object StudioLayoutInjector {
             setIcon(R.drawable.ic_play, Color.WHITE, "Play")
             setOnClickListener { activity.transportPlayTap() }
         }
+        val listBtn = IconBtn(activity).apply {
+            setIcon(R.drawable.ic_drag, Color.WHITE, "Source list")
+            setOnClickListener { activity.toggleSourcesSheet() }
+        }
+        transport.addView(listBtn,
+            LinearLayout.LayoutParams(UI.dp(activity, 48), UI.dp(activity, 48)))
         transport.addView(activity.playBtn,
             LinearLayout.LayoutParams(UI.dp(activity, 48), UI.dp(activity, 48)))
         activity.timeLabel.apply {
@@ -407,6 +413,48 @@ object StudioLayoutInjector {
         root.addView(topStripWrap, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.TOP))
+
+        // ---- P1-2/P1-3: bottom sheet host (sources · mixer · properties) ----
+        // Modal over the bottom dock; the canvas fits above it via insets and it
+        // caps at 45% of the screen (capPanelHeight). Content builders live in
+        // EditorActivity; setSheet() drives visibility + animations; Back closes.
+        activity.panelDivider.apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = UI.dpf(activity, 2f)
+                setColor(Color.argb(120, 255, 255, 255))
+            }
+        }
+        activity.panelContent.orientation = LinearLayout.VERTICAL
+        activity.panelScroll.removeAllViews()
+        activity.panelScroll.addView(activity.panelContent,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT))
+        activity.sheet.apply {
+            tag = "bottomSheet"
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadii = floatArrayOf(
+                    UI.dpf(activity, 20f), UI.dpf(activity, 20f),
+                    UI.dpf(activity, 20f), UI.dpf(activity, 20f),
+                    0f, 0f, 0f, 0f)
+                setColor(Color.argb(252, 16, 18, 24))
+            }
+            removeAllViews()
+            addView(activity.panelDivider,
+                LinearLayout.LayoutParams(UI.dp(activity, 48), UI.dp(activity, 4)).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    setMargins(0, UI.dp(activity, 10), 0, UI.dp(activity, 2))
+                })
+            addView(activity.panelScroll,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT))
+            visibility = View.GONE
+        }
+        root.addView(activity.sheet, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM))
 
         // ---- P0-7: snackbar under the wheel (visible once the wheel dismisses) ----
         activity.buildSnackBar(root)

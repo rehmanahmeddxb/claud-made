@@ -95,7 +95,7 @@ class SourceDock(
 
         // --- eye (visibility) ---
         val eye = IconBtn(act)
-        eye.layoutParams = IconBtn.sized(act, 44)
+        eye.layoutParams = IconBtn.sizedLinear(act, 44)
         eye.setIcon(
             if (l.visible) R.drawable.ic_eye else R.drawable.ic_eye_off,
             if (l.visible) UI.FG else Color.argb(120, 255, 255, 255),
@@ -106,7 +106,7 @@ class SourceDock(
         // --- mute (only meaningful for video-like sources) ---
         if (l.isClip()) {
             val mute = IconBtn(act)
-            mute.layoutParams = IconBtn.sized(act, 44)
+            mute.layoutParams = IconBtn.sizedLinear(act, 44)
             val effMuted = l.muted || mutedBySolo(l)
             mute.setIcon(
                 if (effMuted) R.drawable.ic_volume_off else R.drawable.ic_volume,
