@@ -68,12 +68,18 @@ if "saveThumb" not in editor:
     )
 
 # --- Guard 4 -----------------------------------------------------------------
-# BUG-07: choosing an export aspect must not physically rotate the handset.
+# 2026-09-07: a 16:9 project IS a landscape project, so the studio may follow
+# the canvas ratio (that is the requested behaviour). What is NOT allowed is
+# taking that choice away from the user: any forced orientation must be behind
+# the PREF_ORIENT policy, which has to offer a free and a locked mode too.
 if re.search(r"SCREEN_ORIENTATION_SENSOR_(LANDSCAPE|PORTRAIT)", editor):
-    failures.append(
-        "EditorActivity forces device rotation (SCREEN_ORIENTATION_SENSOR_*). "
-        "Aspect is an export choice, not a request to rotate the phone."
-    )
+    for token in ("PREF_ORIENT", "ORIENT_AUTO", "ORIENT_LOCK",
+                  "SCREEN_ORIENTATION_UNSPECIFIED"):
+        if token not in editor:
+            failures.append(
+                "EditorActivity forces device rotation without the "
+                f"user-overridable orientation policy (missing {token})."
+            )
 
 # --- Guard 5 -----------------------------------------------------------------
 # BUG-11: touch targets. These specific constants regressed before.
