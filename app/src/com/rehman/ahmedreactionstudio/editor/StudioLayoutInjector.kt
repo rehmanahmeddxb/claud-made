@@ -109,13 +109,40 @@ object StudioLayoutInjector {
         canvasContainer.addView(activity.stage, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER))
 
-        // gentle empty-state hint — points at the Sources wheel instead of a
+        // ---- SIDEBAR: collapsible hierarchical menu (replaces radial wheel + right rail) ----
+        activity.sidebar = SidebarView(activity)
+        activity.sidebar.onStateChanged = { open ->
+            activity.applyViewportInsets()
+            if (open) activity.refreshSidebar()
+        }
+        root.addView(activity.sidebar, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        // ---- FLOATING CONTROLS: play/pause, stop, record on the canvas ----
+        activity.floatingControls = FloatingControls(activity)
+        activity.floatingControls.bind(
+            onPlayPause = { activity.transportPlayTap() },
+            onStop = { activity.controlsStopTap() },
+            onRecord = { activity.recordButtonTap() }
+        )
+        val isLand = activity.resources.configuration.orientation ==
+            android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val floatingGravity = if (isLand) Gravity.END or Gravity.BOTTOM
+                               else Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM
+        canvasContainer.addView(activity.floatingControls, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            floatingGravity).apply {
+            rightMargin = UI.dp(activity, 16)
+            bottomMargin = UI.dp(activity, 16)
+        })
+
+        // gentle empty-state hint — points at the sidebar menu instead of a
         // panel that no longer exists
         activity.emptyOverlay.orientation = LinearLayout.VERTICAL
         activity.emptyOverlay.gravity = Gravity.CENTER
         // P1-6: tappable + honest (names the real entry point; no \u2295 exists anywhere).
         val emptyHint = UI.label(activity,
-            "No sources yet — tap here or Layers \u2192\nto add your first camera or video",
+            "No sources yet — tap ☰ Menu or tap here\nto add your first camera or video",
             dim = false, size = 14f)
         emptyHint.gravity = Gravity.CENTER
         emptyHint.setPadding(UI.dp(activity, 20), UI.dp(activity, 14),
@@ -418,6 +445,15 @@ object StudioLayoutInjector {
             setPadding(UI.dp(activity, 4), UI.dp(activity, 4),
                 UI.dp(activity, 8), UI.dp(activity, 4))
         }
+        // ---- HAMBURGER (☰) toggle for the sidebar ----
+        val hamburgerBtn = IconBtn(activity).apply {
+            id = R.id.sidebar_toggle
+            setIcon(R.drawable.ic_menu, Color.WHITE, "Toggle menu")
+            setOnClickListener { activity.toggleSidebar() }
+        }
+        topStrip.addView(hamburgerBtn,
+            LinearLayout.LayoutParams(UI.dp(activity, 48), UI.dp(activity, 48)))
+        // ---- Back button (after hamburger) ----
         val backBtn = IconBtn(activity).apply {
             setIcon(R.drawable.ic_back, Color.WHITE, "Back")
             setOnClickListener { activity.onBackPressed() }
@@ -581,6 +617,9 @@ object StudioLayoutInjector {
         // ---- P1-1: project name/meta + aspect + undo/redo state ----
         activity.syncTopStrip()
 
+        // ---- SIDEBAR: initial tree build ----
+        activity.refreshSidebar()
+
         // ---- P1-6: first-run coach (once ever, dismisses to the canvas) ----
         if (activity.shouldShowCoach()) {
             val scrim = View(activity).apply {
@@ -603,9 +642,9 @@ object StudioLayoutInjector {
             }
             coach.addView(ct)
             val steps = TextView(activity).apply {
-                text = "1 \u00b7 Add camera + video from Layers (right rail)\n" +
+                text = "1 \u00b7 Tap \u2630 Menu \u2192 Sources \u2192 Add to add camera/video\n" +
                     "2 \u00b7 Drag, pinch and resize right on the canvas\n" +
-                    "3 \u00b7 Record from Play, export from Studio"
+                    "3 \u00b7 Use floating buttons or Menu \u2192 Record to capture"
                 setTextColor(UI.FG)
                 textSize = 13f
                 setLineSpacing(UI.dpf(activity, 4f), 1f)
