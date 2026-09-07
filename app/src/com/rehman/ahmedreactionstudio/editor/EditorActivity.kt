@@ -199,6 +199,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private var screenLight = false
     private var screenLightView: View? = null
 
+    // ── SIDEBAR UI (replaces radial wheel + right rail + bottom sheet) ──
+    lateinit var sidebar: SidebarView
+    lateinit var floatingControls: FloatingControls
+
     lateinit var engine: PreviewEngine
     private val undo = UndoStack()
     private val saveHandler = Handler(Looper.getMainLooper())
@@ -418,6 +422,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     override fun onBackPressed() {
+        // sidebar: close it first before anything else
+        if (this::sidebar.isInitialized && sidebar.isOpen) { sidebar.close(); return }
         if (wheelReady() && wheel.isOpen()) { wheel.pop(); return }
         if (fullCanvas) { setFullCanvas(false); return }
         if (sheetTab != null) { setSheet(null); return }
@@ -813,6 +819,23 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         wheel.show(level, ax, ay)
     }
 
+    // ================= sidebar (replaces radial wheel + right rail) =================
+
+    /** Toggle the sidebar open / closed. */
+    fun toggleSidebar() {
+        if (!this::sidebar.isInitialized) return
+        sidebar.toggle()
+        // recompute canvas insets when sidebar opens/closes
+        applyViewportInsets()
+    }
+
+    /** Rebuild the sidebar tree from live project state. */
+    fun refreshSidebar() {
+        if (!this::sidebar.isInitialized) return
+        val sections = SidebarTree.build(this)
+        sidebar.refresh(sections)
+    }
+
     // ================= sheet (only where a ring is the wrong tool) =================
 
     fun setSheet(tab: String?) {
@@ -1030,6 +1053,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             { from, to -> ctrl.reorderLive(from, to); stage.refresh() },
             { markDirty(); refreshAll() },
             { l -> l.relPath?.let { File(store.mediaDir(projectId), it).absolutePath } })
+        // keep the sidebar tree in sync with project state changes
+        refreshSidebar()
     }
 
     private fun rebuildDock() {
@@ -1633,6 +1658,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         updateHiddenPill()
         refreshTabBar()
         bindSidePanels()
+        refreshSidebar()
+        // update floating controls state
+        if (this::floatingControls.isInitialized) {
+            val playing = engineReady() && engine.anyPlaying()
+            val hasLive = proj?.layers?.any { it.isLive() } == true
+            val hasClip = proj?.layers?.any { it.isClip() } == true
+            floatingControls.update(playing, recording, hasLive && hasClip)
+        }
     }
 
     private fun bindSidePanels() {
