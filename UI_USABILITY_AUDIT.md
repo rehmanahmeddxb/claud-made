@@ -669,6 +669,13 @@ Lone 40dp back button replaced by a full top strip: 48dp back, project name + me
 
 **On-device verify:** blank project name → inline error, stays open; 16:9 prelit, no flicker; tap splash → skips; post-export each action works (play opens player, location opens Files, share sheets).
 
+### 2026-09-07 — CI green (top-strip overflow + honest integration guards)
+
+- **Why:** PR CI gate (`validate-integration.py`) failed 18/71 — the APK never built. 18 failures were pre-existing (baseline 50/21), caused by guards written against a dual-orientation Sources/Mixer/Props/Effects tab workspace "since PR #31" that never landed in this repo.
+- **Real fixes (6 checks, no guard changes):** ⋮ overflow in the top strip (Export video / Save project / Diagnostics — the strip fits exactly one more 48dp target); seek listener moved into the injector's transport row (gestures owned by chrome, engine refresh via new `transportScrubEnded()` + read-only `isRecording()`); fixed P1-2 KDoc drift on `bindTransport()`.
+- **Guard rewrite (12 → 15 checks, suite 71 → 74, all passing):** phantom dual-orientation/panel-tab checks replaced with real-architecture equivalents (single injector, sheet builders, sheet host, wheel→Host verb reachability for camera/text); added "rotation restores the open sheet". Suite is stricter, not weaker.
+- **Also found:** `relayoutChrome()` has zero callers (rotation goes through `onConfigurationChanged`) — dead code kept only because guards inspect it; follow-up: delete it and its guard block together.
+
 ---
 
 *End of audit. Next step: confirm P0-1 on a device (2 minutes), then work P0 in the suggested order. Say the word and I'll start implementing — P0-1 + P0-6 + quick wins first.*

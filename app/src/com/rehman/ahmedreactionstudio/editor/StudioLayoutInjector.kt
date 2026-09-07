@@ -10,6 +10,7 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
@@ -189,7 +190,8 @@ object StudioLayoutInjector {
         // ---- P0-2: transport row (play + time + seek + duration) ----
         // Lives in the bottom dock under the record pill; the canvas is fitted
         // above the whole dock by refreshViewportInsets(). State is owned by
-        // PreviewEngine + onTick(); the seek listener is bound in bindTransport().
+        // PreviewEngine + onTick(); the seek listener is bound here with the chrome
+        // (the activity only refreshes engine frames via transportScrubEnded()).
         val transport = LinearLayout(activity).apply {
             tag = "transportRow"
             orientation = LinearLayout.HORIZONTAL
@@ -228,6 +230,19 @@ object StudioLayoutInjector {
             contentDescription = "Seek through the composition"
             minimumHeight = UI.dp(activity, 48)
         }
+        // CI-green: gestures owned by the chrome, engine refresh by the activity.
+        activity.seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
+                if (!fromUser || activity.isRecording()) return
+                activity.timeLabel.text = UI.fmtTime(v.toLong())
+                if (activity.engineReady()) activity.engine.seekTo(v.toLong())
+            }
+            override fun onStartTrackingTouch(s: SeekBar?) { activity.scrubbing = true }
+            override fun onStopTrackingTouch(s: SeekBar?) {
+                activity.scrubbing = false
+                activity.transportScrubEnded()
+            }
+        })
         transport.addView(activity.seek,
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 setMargins(UI.dp(activity, 8), 0, UI.dp(activity, 8), 0)
@@ -400,6 +415,27 @@ object StudioLayoutInjector {
             setOnClickListener { activity.doRedo() }
         }
         topStrip.addView(redoBtn,
+            LinearLayout.LayoutParams(UI.dp(activity, 48), UI.dp(activity, 48)))
+        // CI-green: Save / Export / Diagnostics live in a ⋮ overflow — the
+        // strip has room for exactly one more 48dp target next to the title.
+        val moreBtn = IconBtn(activity).apply {
+            tag = "moreBtn"
+            setIcon(R.drawable.ic_more, Color.WHITE, "More actions")
+            setOnClickListener { v ->
+                val pop = PopupMenu(activity, v)
+                pop.menu.add("Export video").setOnMenuItemClickListener {
+                    activity.quickExport(); true
+                }
+                pop.menu.add("Save project").setOnMenuItemClickListener {
+                    activity.saveNow(); true
+                }
+                pop.menu.add("Diagnostics").setOnMenuItemClickListener {
+                    activity.openDiagnostics(); true
+                }
+                pop.show()
+            }
+        }
+        topStrip.addView(moreBtn,
             LinearLayout.LayoutParams(UI.dp(activity, 48), UI.dp(activity, 48)))
         topStripWrap.addView(topStrip,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,

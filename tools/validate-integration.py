@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Static merge guards for the redesigned Studio workspace.
+"""Static merge guards for the shipped Studio workspace.
 
-Since PR #31 ("Redesign Studio Workspace") the editor chrome lives in
-StudioLayoutInjector (top bar / left tool rail / right panel with
-Sources-Mixer-Props-Effects tabs / timeline / transport, in both
-orientations), while EditorActivity keeps the engine, camera, recording and
-sheet behaviour. These guards check that both halves of the new architecture
-ship together, that rotation re-layout stays lifecycle-safe, and that the
-pre-existing integrations (stage, preview engine, model, recorder, dock)
+The editor chrome lives in StudioLayoutInjector (top strip / wheel rail /
+transport row / bottom-sheet host — ONE responsive layout), while
+EditorActivity keeps the engine, camera, recording and sheet behaviour, and
+RadialMenus.kt owns the radial wheels whose leaves call back through the
+Host interface. (An earlier revision of these guards described a
+dual-orientation Sources/Mixer/Props/Effects tab workspace "since PR #31";
+that redesign never landed in this repo — the checks below assert the
+architecture that actually ships, per UI_USABILITY_AUDIT.md.) These guards
+check that the halves ship together, that rotation stays lifecycle-safe,
+and that the integrations (stage, preview engine, model, recorder, dock)
 remain wired.
 
 These check integration wiring, not Android runtime behaviour. Real inset,
@@ -19,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "app/src/com/rehman/ahmedreactionstudio"
 editor = (SRC / "editor/EditorActivity.kt").read_text()
 injector = (SRC / "editor/StudioLayoutInjector.kt").read_text()
+radial = (SRC / "editor/RadialMenus.kt").read_text()
 errors = []
 passed = []
 
@@ -52,23 +56,22 @@ check("one toolbar, not the disabled Phase 2 legacy pill", "USE_QUICK_BAR" not i
 check("four-side viewport API only", "setChromeInsets" not in editor)
 
 # ------------------------------------------- StudioLayoutInjector: chrome ---
-# The redesigned workspace must build BOTH orientations; each one creates its
-# own StageView (bound to the activity host) and its own panel set.
-check("injector builds landscape and portrait layouts",
-      "if (isLandscape)" in injector and "} else {" in injector)
-check("StageView created in both orientations",
-      count(injector, "activity.stage = StageView(activity)") == 2)
-check("StageView host bound in both orientations",
-      count(injector, "activity.stage.host = activity") == 2)
-for panel in ("SourcesPanel(activity)", "MixerPanel(activity)", "EffectsPanel(activity)"):
-    check(f"{panel.split('(')[0]} created in both orientations",
-          count(injector, panel) == 2)
-check("panel tab bar offers Sources/Mixer/Props/Effects + close in both orientations",
-      all(count(injector, f'createTab("{t}"') == 2
-          for t in ("Sources", "Mixer", "Props", "Effects", "X")))
-check("both orientations bind their panels", count(injector, "bindPanels(activity,") == 2)
-check("both orientations build the transport bar", count(injector, "buildTransport(activity,") == 2)
-check("both orientations build the timeline seek", count(injector, "activity.seek = seek") == 2)
+# The shipped workspace builds ONE responsive layout: top strip, wheel rail,
+# transport row and bottom-sheet host. Panels are bottom sheets (sources /
+# mixer / properties) built by the activity, reached from the rail wheels.
+check("injector builds the top strip", '"topStrip"' in injector)
+check("StageView created once",
+      count(injector, "activity.stage = StageView(activity)") == 1)
+check("StageView host bound",
+      count(injector, "activity.stage.host = activity") == 1)
+check("sources sheet builder exists", "fun buildSourcesPanel(" in editor)
+check("mixer sheet builder exists", "fun buildMixerPanel(" in editor)
+check("layer ring declared for the editor", "fun openFlashRing(l: Layer)" in radial)
+check("layer ring implemented by the editor", "override fun openFlashRing" in editor)
+check("bottom sheet host attached", 'tag = "bottomSheet"' in injector)
+check("injector builds the transport row", '"transportRow"' in injector)
+check("injector builds the timeline seek",
+      count(injector, "activity.seek = SeekBar(activity)") == 1)
 
 # Top bar actions must reach the real verbs, not dead buttons.
 for needle, name in (
@@ -79,16 +82,27 @@ for needle, name in (
 ):
     contains(injector, needle, name)
 
-# Landscape left tool rail: every tool wired to a real editor verb.
+# Top strip + panel rows: core verbs wired to the activity.
 for needle, name in (
     ("activity.pickMedia(true)", "tool rail add/video wired"),
-    ("activity.addLiveCamera()", "tool rail camera wired"),
     ("activity.pickMedia(false)", "tool rail image wired"),
-    ("activity.addText()", "tool rail text wired"),
     ("activity.doUndo()", "tool rail undo wired"),
     ("activity.doRedo()", "tool rail redo wired"),
 ):
     contains(injector, needle, name)
+
+# The rail opens wheels; the wheels must offer camera + text, and the Host
+# verbs must reach real editor implementations (no dead leaves).
+for needle, name in (
+    ("h.addCameraLive()", "sources wheel offers live camera"),
+    ("h.addTextSource()", "sources wheel offers text"),
+):
+    contains(radial, needle, name)
+for needle, name in (
+    ("override fun addCameraLive()", "camera verb reaches the editor"),
+    ("override fun addTextSource()", "text verb reaches the editor"),
+):
+    contains(editor, needle, name)
 
 # Sources panel: full OBS-style verb set, including the redesign's new
 # move-up/move-down Z-order controls.
@@ -143,6 +157,7 @@ contains(reconf, "StudioLayoutInjector.inject(this, rootFrame)",
          "configuration change re-injects the workspace")
 contains(reconf, "syncPreviewTarget()", "configuration change re-targets the preview")
 contains(reconf, "stage.refresh()", "configuration change refreshes the stage")
+contains(reconf, "setSheet(tab)", "rotation restores the open sheet")
 
 # First build must go through the injector too (not a second chrome).
 build_ui = method("buildUi")

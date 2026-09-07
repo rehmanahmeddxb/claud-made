@@ -207,6 +207,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         recorder?.micGain = micGainPref
     }
     private var recording = false
+    /** Read-only recording flag for the injector's transport chrome. */
+    internal fun isRecording(): Boolean = recording
 
     // Throttle clocks for onTick: transport UI at ~20 Hz, stats HUD at ~2 Hz.
     private var lastUiTickMs = 0L
@@ -1450,36 +1452,28 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         togglePlay()
     }
 
-    /**
-     * P0-2: bind the transport row built by [StudioLayoutInjector] (seek gestures
-     * + initial range/labels). Idempotent across rotations — the listener is
-     * replaced on the fresh SeekBar and state re-syncs below. onTick() keeps
-     * time/seek/play-icon fresh at ~20 Hz while playing.
-     */
     /** P1-2: transport list button toggles the sources sheet. */
     fun toggleSourcesSheet() {
         if (sheetTab == "sources") setSheet(null) else openDockPanel()
     }
 
+    /**
+     * P0-2: re-sync the transport row built by [StudioLayoutInjector] (range +
+     * labels) across rotations. The seek listener lives with the chrome in the
+     * injector; onTick() keeps time/seek/play-icon fresh at ~20 Hz while playing.
+     */
     internal fun bindTransport() {
-        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
-                if (!fromUser || recording) return
-                timeLabel.text = UI.fmtTime(v.toLong())
-                if (engineReady()) engine.seekTo(v.toLong())
-            }
-            override fun onStartTrackingTouch(s: SeekBar?) { scrubbing = true }
-            override fun onStopTrackingTouch(s: SeekBar?) {
-                scrubbing = false
-                if (engineReady()) {
-                    engine.refreshFrames()
-                    onTick(engine.master())
-                }
-                if (this@EditorActivity::stage.isInitialized) stage.refresh()
-            }
-        })
         syncTransportBounds()
         onTick(if (engineReady()) engine.master() else 0L)
+    }
+
+    /** Called by the injector's transport row when a seek gesture finishes. */
+    internal fun transportScrubEnded() {
+        if (engineReady()) {
+            engine.refreshFrames()
+            onTick(engine.master())
+        }
+        if (this::stage.isInitialized) stage.refresh()
     }
 
     /** Keep the seek range + duration label in sync (clips change the duration). */
