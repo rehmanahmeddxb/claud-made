@@ -1271,6 +1271,51 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         onTick(engine.master())
     }
 
+    /** P0-2: transport-row play tap. Blocked while recording — the take owns the clock. */
+    fun transportPlayTap() {
+        if (recording) {
+            UI.toast(this, "Stop the recording to control playback")
+            return
+        }
+        togglePlay()
+    }
+
+    /**
+     * P0-2: bind the transport row built by [StudioLayoutInjector] (seek gestures
+     * + initial range/labels). Idempotent across rotations — the listener is
+     * replaced on the fresh SeekBar and state re-syncs below. onTick() keeps
+     * time/seek/play-icon fresh at ~20 Hz while playing.
+     */
+    internal fun bindTransport() {
+        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
+                if (!fromUser || recording) return
+                timeLabel.text = UI.fmtTime(v.toLong())
+                if (engineReady()) engine.seekTo(v.toLong())
+            }
+            override fun onStartTrackingTouch(s: SeekBar?) { scrubbing = true }
+            override fun onStopTrackingTouch(s: SeekBar?) {
+                scrubbing = false
+                if (engineReady()) {
+                    engine.refreshFrames()
+                    onTick(engine.master())
+                }
+                if (this@EditorActivity::stage.isInitialized) stage.refresh()
+            }
+        })
+        syncTransportBounds()
+        onTick(if (engineReady()) engine.master() else 0L)
+    }
+
+    /** Keep the seek range + duration label in sync (clips change the duration). */
+    private fun syncTransportBounds() {
+        val dur = (proj?.durationMs()?.toInt() ?: 1).coerceAtLeast(1)
+        if (transportReady()) {
+            seek.max = dur
+            durationLabel.text = "/ " + UI.fmtTime(dur.toLong())
+        }
+    }
+
     // ================= StageView.Host =================
 
     override val project: Project get() = proj!!
@@ -1454,14 +1499,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         if (this::aspectChip.isInitialized) updateAspectChip()
         if (this::stage.isInitialized) stage.post { syncPreviewTarget() }
         refreshAll()
-        val dur = proj!!.durationMs().toInt().coerceAtLeast(1)
-        // The experimental side-panel layout omits the transport bar, so seek /
-        // durationLabel may never have been built. Adding a source (camera
-        // permission result, import, undo) must still succeed.
-        if (transportReady()) {
-            seek.max = dur
-            durationLabel.text = "/ " + UI.fmtTime(dur.toLong())
-        }
+        syncTransportBounds()
         if (this::stage.isInitialized) stage.refresh()
         if (engineReady()) {
             engine.refreshFrames()

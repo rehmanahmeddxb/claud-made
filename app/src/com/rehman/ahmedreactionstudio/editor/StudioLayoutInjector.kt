@@ -174,6 +174,60 @@ object StudioLayoutInjector {
             ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, 48)).apply {
             gravity = Gravity.CENTER_HORIZONTAL
         })
+
+        // ---- P0-2: transport row (play + time + seek + duration) ----
+        // Lives in the bottom dock under the record pill; the canvas is fitted
+        // above the whole dock by refreshViewportInsets(). State is owned by
+        // PreviewEngine + onTick(); the seek listener is bound in bindTransport().
+        val transport = LinearLayout(activity).apply {
+            tag = "transportRow"
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = Ic.pill(activity, Color.argb(150, 12, 14, 19), 16f,
+                Color.argb(60, 255, 255, 255))
+            setPadding(UI.dp(activity, 6), UI.dp(activity, 4),
+                UI.dp(activity, 12), UI.dp(activity, 4))
+        }
+        activity.playBtn.apply {
+            setIcon(R.drawable.ic_play, Color.WHITE, "Play")
+            setOnClickListener { activity.transportPlayTap() }
+        }
+        transport.addView(activity.playBtn,
+            LinearLayout.LayoutParams(UI.dp(activity, 48), UI.dp(activity, 48)))
+        activity.timeLabel.apply {
+            text = "0:00"
+            setTextColor(UI.FG)
+            textSize = 12f
+            setPadding(UI.dp(activity, 4), 0, 0, 0)
+        }
+        transport.addView(activity.timeLabel,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT))
+        activity.seek.apply {
+            max = 1
+            progress = 0
+            progressTintList = android.content.res.ColorStateList.valueOf(UI.ACCENT)
+            thumbTintList = android.content.res.ColorStateList.valueOf(UI.ACCENT2)
+            contentDescription = "Seek through the composition"
+            minimumHeight = UI.dp(activity, 48)
+        }
+        transport.addView(activity.seek,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(UI.dp(activity, 8), 0, UI.dp(activity, 8), 0)
+            })
+        activity.durationLabel.apply {
+            text = "/ 0:00"
+            setTextColor(UI.FG2)
+            textSize = 12f
+        }
+        transport.addView(activity.durationLabel,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT))
+        bottomDock.addView(transport,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = UI.dp(activity, 8)
+            })
         root.addView(bottomDock, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM))
@@ -257,6 +311,9 @@ object StudioLayoutInjector {
 
         // ---- P0-4: fit the canvas clear of rail + pills + dock ----
         activity.bindMinimalChromeInsets()
+
+        // ---- P0-2: seek listener + initial transport state ----
+        activity.bindTransport()
     }
 
     private fun bindPanels(activity: EditorActivity, sourcesPanel: SourcesPanel, mixerPanel: MixerPanel, propertiesPanel: View) {

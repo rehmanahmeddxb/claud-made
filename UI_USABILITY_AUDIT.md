@@ -618,6 +618,12 @@ All paths under `_extracted/` (unzipped from `AhmedReactionStudio-source.zip`):
 
 **On-device verify:** start each recording type → red pill appears with running time → tap pill stops it; record button always visible at bottom with correct readiness state; canvas never hides under rail/pills (check 16:9 + 9:16, portrait + landscape); export shows cancellable progress; delete a source → Undo snackbar appears.
 
+### 2026-09-07 — P0-2 fixed (transport: play + time + seek + duration)
+
+Transport row added to the bottom dock under the record pill (translucent rounded bar: 48dp play button, current time, accent-tinted seekbar, duration). Reuses the engine's existing clock: `bindTransport()` wires live scrub (`SeekBar` → `engine.seekTo()` with `scrubbing` guard so `onTick` doesn't fight the thumb), `syncTransportBounds()` keeps range/duration fresh on every structure change (replacing the inline block in `afterStructureChange`), and the existing `onTick` 20 Hz refresh + play-icon swap now drive visible views. Play and seek are blocked during recording (the take owns the clock) with an explanatory toast. Idempotent across rotation.
+
+**On-device verify:** play/pause toggles icon + all clips; seek scrubs video + timecode live and springs correctly on release; duration updates when adding a longer clip; play/seek safely ignored mid-recording; transport + record pill never overlap the canvas (insets).
+
 ---
 
 *End of audit. Next step: confirm P0-1 on a device (2 minutes), then work P0 in the suggested order. Say the word and I'll start implementing — P0-1 + P0-6 + quick wins first.*
