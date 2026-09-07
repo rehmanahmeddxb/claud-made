@@ -2653,31 +2653,168 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
     override fun openExportPanel() {
         if (sheetAttached()) { setSheet("export"); return }
-        // The export settings sheet doesn't exist in minimal chrome — say so
-        // honestly and offer the working path (quick export with last prefs).
+        showExportSettings()
+    }
+    override fun openAdvanced(l: Layer) { openAdvancedSheet(l) }
+
+    /** Last-used export settings (sticky prefs — quick export reuses them). */
+    private data class ExportSettings(val codec: Exporter.Codec, val quality: Int,
+        val maxDim: Int, val fps: Int)
+
+    private fun lastExportSettings(): ExportSettings {
         val prefs = editorPrefs()
         val avail = Exporter.Codec.available().ifEmpty { listOf(Exporter.Codec.H264) }
         val codec = avail.firstOrNull { it.name == prefs.getString(PREF_EXP_CODEC, "H264") }
             ?: avail.firstOrNull { it == Exporter.Codec.H264 } ?: avail[0]
-        val qLabel = EncoderConfig.Quality.of(prefs.getInt(PREF_EXP_QUALITY,
-            EncoderConfig.Quality.BALANCED.ordinal)).label
-        val maxDim = prefs.getInt(PREF_EXP_MAXDIM, 720)
-        val fps = prefs.getInt(PREF_EXP_FPS, 30)
+        val quality = prefs.getInt(PREF_EXP_QUALITY, EncoderConfig.Quality.BALANCED.ordinal)
+            .coerceIn(0, EncoderConfig.Quality.entries.size - 1)
+        val maxDim = prefs.getInt(PREF_EXP_MAXDIM, 720).let {
+            if (it <= 480) 480 else if (it >= 1080) 1080 else 720
+        }
+        val fps = prefs.getInt(PREF_EXP_FPS, 30).let {
+            if (it == 24) 24 else if (it == 60) 60 else 30
+        }
+        return ExportSettings(codec, quality, maxDim, fps)
+    }
+
+    private fun persistExportSettings(codec: Exporter.Codec, quality: Int, maxDim: Int, fps: Int) {
+        editorPrefs().edit()
+            .putString(PREF_EXP_CODEC, codec.name)
+            .putInt(PREF_EXP_QUALITY, quality)
+            .putInt(PREF_EXP_MAXDIM, maxDim)
+            .putInt(PREF_EXP_FPS, fps)
+            .putBoolean(PREF_HAD_EXPORT, true)
+            .apply()
+    }
+
+    /**
+     * P0-5: export settings as a dialog (minimal chrome has no bottom sheet to
+     * host picker rows). Four rows — codec / resolution / quality / frame rate —
+     * each opening a single-choice list, plus a live size estimate and an Export
+     * CTA. Picks persist immediately, so quick export reuses the last settings
+     * even if this dialog is cancelled afterwards.
+     */
+    private fun showExportSettings() {
+        if (exportRunning) { UI.toast(this, "An export is already running"); return }
+        val p = proj ?: return
+        val codecs = Exporter.Codec.available().ifEmpty { listOf(Exporter.Codec.H264) }
+        val last = lastExportSettings()
+        var codec = codecs.firstOrNull { it == last.codec } ?: codecs[0]
+        var quality = last.quality
+        var maxDim = last.maxDim
+        var fps = last.fps
+
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(UI.dp(this@EditorActivity, 20), UI.dp(this@EditorActivity, 8),
+                UI.dp(this@EditorActivity, 20), 0)
+        }
+        val estimate = TextView(this).apply {
+            setTextColor(UI.FG2)
+            textSize = 12f
+        }
+        fun refreshEstimate() {
+            val (w, h) = Exporter.chooseSize(p.aspect.canvasW, p.aspect.canvasH, maxDim)
+            val bytes = EncoderConfig.predictedBytes(EncoderConfig.Quality.of(quality),
+                w, h, fps, codec.mime, p.durationMs())
+            estimate.text = "\u2248 ${UI.niceBytes(bytes)} \u00b7 ${w}\u00d7${h} \u00b7 ${codec.label}"
+        }
+        fun row(label: String, get: () -> String, onPick: ((String) -> Unit) -> Unit) {
+            val r = LinearLayout(this@EditorActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = UI.dp(this@EditorActivity, 56)
+            }
+            val lb = TextView(this@EditorActivity).apply {
+                text = label
+                setTextColor(UI.FG)
+                textSize = 14f
+                layoutParams = LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val vb = UI.chip(this@EditorActivity, get()).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(this@EditorActivity, 48))
+                contentDescription = "Choose $label"
+                setOnClickListener { onPick { v -> text = v } }
+            }
+            r.addView(lb)
+            r.addView(vb)
+            body.addView(r)
+        }
+        row("Codec", { codec.label }) { set ->
+            val labels = codecs.map { "${it.label}  \u00b7  ${it.ext.uppercase()}" }.toTypedArray()
+            AlertDialog.Builder(this).setTitle("Codec — only encoders this device has")
+                .setSingleChoiceItems(labels, codecs.indexOf(codec)) { d, which ->
+                    codec = codecs[which]
+                    persistExportSettings(codec, quality, maxDim, fps)
+                    set(codec.label); refreshEstimate(); d.dismiss()
+                }
+                .setNegativeButton("Cancel", null).show()
+        }
+        row("Resolution", { "${maxDim}p" }) { set ->
+            val opts = intArrayOf(480, 720, 1080)
+            val labels = arrayOf("480p", "720p", "1080p")
+            AlertDialog.Builder(this).setTitle("Resolution")
+                .setSingleChoiceItems(labels, opts.indexOf(maxDim).coerceAtLeast(1)) { d, which ->
+                    maxDim = opts[which]
+                    persistExportSettings(codec, quality, maxDim, fps)
+                    set("${maxDim}p"); refreshEstimate(); d.dismiss()
+                }
+                .setNegativeButton("Cancel", null).show()
+        }
+        row("Quality", { EncoderConfig.Quality.of(quality).label }) { set ->
+            val qs = EncoderConfig.Quality.entries
+            AlertDialog.Builder(this).setTitle("Quality")
+                .setSingleChoiceItems(qs.map { it.label }.toTypedArray(), quality) { d, which ->
+                    quality = which
+                    persistExportSettings(codec, quality, maxDim, fps)
+                    set(EncoderConfig.Quality.of(quality).label); refreshEstimate(); d.dismiss()
+                }
+                .setNegativeButton("Cancel", null).show()
+        }
+        row("Frame rate", { "${fps} fps" }) { set ->
+            val opts = intArrayOf(24, 30, 60)
+            val labels = arrayOf("24 fps", "30 fps", "60 fps")
+            AlertDialog.Builder(this).setTitle("Frame rate")
+                .setSingleChoiceItems(labels, opts.indexOf(fps).coerceAtLeast(1)) { d, which ->
+                    fps = opts[which]
+                    persistExportSettings(codec, quality, maxDim, fps)
+                    set("${fps} fps"); refreshEstimate(); d.dismiss()
+                }
+                .setNegativeButton("Cancel", null).show()
+        }
+        val elp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT)
+        elp.setMargins(0, UI.dp(this, 10), 0, 0)
+        estimate.layoutParams = elp
+        body.addView(estimate)
+        body.addView(UI.label(this,
+            "H.264 plays almost everywhere; HEVC/VP8/VP9 may not play in some apps.",
+            dim = true, size = 11f))
+        refreshEstimate()
         AlertDialog.Builder(this)
             .setTitle("Export settings")
-            .setMessage("The full settings sheet is being restored in this build.\n\n" +
-                "Quick export uses your last settings: ${codec.label}, ${maxDim}p, " +
-                "${fps} fps, $qLabel quality.")
-            .setPositiveButton("Quick export now") { _, _ -> quickExport() }
+            .setView(body)
+            .setPositiveButton("\u21ea Export video") { _, _ ->
+                persistExportSettings(codec, quality, maxDim, fps)
+                if (warnLiveBeforeExport()) return@setPositiveButton
+                runExport(quality, maxDim, fps, codec)
+            }
+            .setNeutralButton("Defaults") { _, _ ->
+                persistExportSettings(Exporter.Codec.H264,
+                    EncoderConfig.Quality.BALANCED.ordinal, 720, 30)
+                showExportSettings()
+            }
             .setNegativeButton("Cancel", null)
             .show()
     }
-    override fun openAdvanced(l: Layer) { openAdvancedSheet(l) }
     override fun quickExport() {
-        val avail = Exporter.Codec.available().ifEmpty { listOf(Exporter.Codec.H264) }
-        val codec = avail.firstOrNull { it == Exporter.Codec.H264 } ?: avail[0]
+        // P0-5: quick export = "export again with last settings" (sticky prefs),
+        // not hardcoded 720p30 — the settings dialog owns the defaults.
         if (warnLiveBeforeExport()) return
-        runExport(1, 720, 30, codec)
+        val s = lastExportSettings()
+        runExport(s.quality, s.maxDim, s.fps, s.codec)
     }
 
     /**
@@ -2695,16 +2832,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 " — it cannot play the live camera forward.")
             .setPositiveButton("Start recording") { _, _ -> recordButtonTap() }
             .setNegativeButton(if (hasFrame) "Export frozen frame" else "Export anyway") { _, _ ->
-                val prefs = editorPrefs()
-                val avail = Exporter.Codec.available().ifEmpty { listOf(Exporter.Codec.H264) }
-                val codec = avail.firstOrNull { it.name == prefs.getString(PREF_EXP_CODEC, "H264") }
-                    ?: avail.firstOrNull { it == Exporter.Codec.H264 } ?: avail[0]
-                val quality = prefs.getInt(PREF_EXP_QUALITY, EncoderConfig.Quality.BALANCED.ordinal)
-                val maxDim = prefs.getInt(PREF_EXP_MAXDIM, 720).let {
-                    if (it <= 480) 480 else if (it >= 1080) 1080 else 720
-                }
-                val fps = prefs.getInt(PREF_EXP_FPS, 30).let { if (it == 24) 24 else if (it == 60) 60 else 30 }
-                runExport(quality, maxDim, fps, codec)
+                val s = lastExportSettings()
+                runExport(s.quality, s.maxDim, s.fps, s.codec)
             }
             .setNeutralButton("Cancel", null)
             .show()

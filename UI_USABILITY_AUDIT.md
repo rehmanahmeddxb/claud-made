@@ -624,6 +624,14 @@ Transport row added to the bottom dock under the record pill (translucent rounde
 
 **On-device verify:** play/pause toggles icon + all clips; seek scrubs video + timecode live and springs correctly on release; duration updates when adding a longer clip; play/seek safely ignored mid-recording; transport + record pill never overlap the canvas (insets).
 
+### 2026-09-07 — P0-5 fixed (export settings + sticky prefs + quick-export reuse)
+
+`showExportSettings()` replaces the P0-1 placeholder dialog: Codec (device-filtered via `Exporter.Codec.available()`), Resolution (480/720/1080p), Quality (all `EncoderConfig.Quality` levels), Frame rate (24/30/60) — each a 48dp row opening a single-choice list — plus a live estimate (≈ size · WxH · codec, via `predictedBytes` + `chooseSize`) and a compatibility note. Picks persist immediately to `PREF_EXP_*` (+`PREF_HAD_EXPORT`); Export CTA persists, runs the live-freeze warning, then `runExport` with chosen settings; "Defaults" resets to H.264/720p/Balanced/30. `quickExport()` is now "export again with last settings" instead of hardcoded 720p30, and the warn-live frozen-frame path shares the same `lastExportSettings()` reader (dedup). Dialog blocked with a toast while an export runs.
+
+**On-device verify:** Export → settings shows 4 working rows + plausible estimate; change all four → Export renders with them; reopen → sticky; Quick export reuses last settings; Defaults resets; export-while-exporting toasts; live-camera export still warns correctly.
+
+**P0 COMPLETE.** Remaining plan: P1-1 top strip (name/aspect/save/undo) → P1-2/P1-3 sheets (sources list, properties) → P1-6 onboarding → rest of P1/P2.
+
 ---
 
 *End of audit. Next step: confirm P0-1 on a device (2 minutes), then work P0 in the suggested order. Say the word and I'll start implementing — P0-1 + P0-6 + quick wins first.*
