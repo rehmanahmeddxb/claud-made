@@ -31,6 +31,19 @@ object RadialMenus {
         fun selected(): Layer?
         fun selectId(id: String?)
 
+        /**
+         * UNDOABLE DESTRUCTIVE VERBS.
+         *
+         * Rings must NOT call `ctrl.delete` / `ctrl.toggleVisible` directly.
+         * Going straight to the controller mutates state correctly but skips
+         * the snackbar, so the user gets no "UNDO" affordance — deleting a
+         * source from the wheel used to be completely silent. Routing through
+         * the host keeps one implementation of "destroy + explain + offer undo"
+         * for every surface (wheel, panels, dock, canvas).
+         */
+        fun deleteSource(l: Layer)
+        fun hideSource(l: Layer)
+
         // add
         fun addVideo()
         fun addImage()
@@ -231,7 +244,7 @@ object RadialMenus {
                 active = h.selected()?.id == l.id) { h.selectId(l.id) })
             out.add(item(if (l.visible) R.drawable.ic_eye_off else R.drawable.ic_eye,
                 if (l.visible) "Hide" else "Show", active = !l.visible, keepOpen = true) {
-                h.ctrl.toggleVisible(l.id)
+                h.hideSource(l)
             })
 
             if (l.isLive()) {
@@ -284,7 +297,7 @@ object RadialMenus {
             if (!l.isLive()) out.add(item(R.drawable.ic_copy, "Duplicate") {
                 h.ctrl.duplicate(l.id)
             })
-            out.add(item(R.drawable.ic_delete, "Delete", danger = true) { h.ctrl.delete(l.id) })
+            out.add(item(R.drawable.ic_delete, "Delete", danger = true) { h.deleteSource(l) })
             out
         }
     }

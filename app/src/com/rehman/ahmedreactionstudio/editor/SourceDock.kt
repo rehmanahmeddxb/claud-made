@@ -46,7 +46,7 @@ class SourceDock(
     private val mediaAbsPath: (Layer) -> String? = { null }
 ) {
 
-    private val ROW_DP = 52
+    private val ROW_DP = 56   // BUG-11: fits a 48dp target plus padding
     private var dragRow: LinearLayout? = null
     private var dragLayer: Layer? = null
 
@@ -116,7 +116,7 @@ class SourceDock(
             row.addView(mute)
         } else {
             val spacer = View(act)
-            row.addView(spacer, LinearLayout.LayoutParams(UI.dp(act, 44), UI.dp(act, 44)))
+            row.addView(spacer, LinearLayout.LayoutParams(UI.dp(act, 48), UI.dp(act, 48)))
         }
 
         // --- type icon / live thumbnail ---
@@ -180,7 +180,8 @@ class SourceDock(
         handle.setImageDrawable(Ic.get(act, R.drawable.ic_drag, Color.argb(170, 255, 255, 255)))
         handle.setPadding(UI.dp(act, 8), UI.dp(act, 8), UI.dp(act, 8), UI.dp(act, 8))
         handle.contentDescription = "Drag to reorder ${l.name}"
-        val hlp = LinearLayout.LayoutParams(UI.dp(act, 44), UI.dp(act, 44))
+        // BUG-11: drag handle raised 44 -> 48dp
+        val hlp = LinearLayout.LayoutParams(UI.dp(act, 48), UI.dp(act, 48))
         handle.layoutParams = hlp
         handle.setOnTouchListener { _, ev -> handleTouch(ev, row, l) }
         row.addView(handle)

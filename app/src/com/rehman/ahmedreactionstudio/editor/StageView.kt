@@ -390,11 +390,18 @@ class StageView @JvmOverloads constructor(
         val halfW = r.width() / 2f
         val halfH = r.height() / 2f
         val (px, py) = toLayerLocal(x, y, l, r)
-        // Finger target: 24dp on normal layers, shrinking for small PiPs so a
-        // tiny layer is not nothing-but-handles (the "cannot drag the PiP"
-        // bug), with a 10dp floor so handles stay grabbable.
-        val touch = min(UI.dpf(context, 24f), min(halfW, halfH) * 0.9f)
-            .coerceAtLeast(UI.dpf(context, 10f))
+        // Finger target: BUG-11 raises this from 24dp/10dp to 28dp/14dp.
+        //
+        // HONEST LIMIT: a full 48dp target is NOT achievable here and claiming
+        // it would be a lie. Eight handles plus a rotate knob sit on the edge
+        // of one box; at 48dp each they would overlap one another on any PiP
+        // smaller than ~150dp and the user could no longer pick a specific
+        // corner. 28dp is the largest radius that keeps all nine
+        // distinguishable, and it still shrinks for tiny layers so a small PiP
+        // is not entirely covered by its own handles (the historic "cannot
+        // drag the PiP" bug). The drag body itself remains a large target.
+        val touch = min(UI.dpf(context, 28f), min(halfW, halfH) * 0.9f)
+            .coerceAtLeast(UI.dpf(context, 14f))
         if (touch <= 0f) return null
         // rotate knob above the top edge
         val knobY = -halfH - UI.dpf(context, 18f)

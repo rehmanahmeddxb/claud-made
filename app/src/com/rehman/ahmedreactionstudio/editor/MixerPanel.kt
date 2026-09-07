@@ -98,7 +98,7 @@ class MixerPanel(context: Context) : LinearLayout(context) {
             gravity = Gravity.CENTER_VERTICAL
             isClickable = true
             isFocusable = true
-            minimumHeight = UI.dp(context, 36)
+            minimumHeight = UI.dp(context, 48)
             contentDescription = "Select ${l.name.ifBlank { l.type.label }}"
             setOnClickListener { listener?.onSelect(l.id) }
         }
@@ -198,7 +198,9 @@ class MixerPanel(context: Context) : LinearLayout(context) {
             setStroke(UI.dp(context, 1), Color.rgb(80, 85, 100))
         }
         b.setOnClickListener { onTap() }
-        val lp = LinearLayout.LayoutParams(UI.dp(context, 36), UI.dp(context, 32))
+        // BUG-11: mixer mute/solo chips were 36x32dp — the smallest targets
+        // in the app. Raised to the 48dp minimum.
+        val lp = LinearLayout.LayoutParams(UI.dp(context, 48), UI.dp(context, 48))
         lp.marginStart = UI.dp(context, 4)
         b.layoutParams = lp
         return b

@@ -41,14 +41,31 @@ class ProjectStore(private val ctx: Context) {
         return p
     }
 
-    fun save(p: Project, alsoSnapshot: Boolean = false) {
-        try {
+    /**
+     * Persist the project.
+     *
+     * @return true when the authoritative project.json was actually replaced.
+     * BUG-17: this used to swallow every exception and return Unit, so a full
+     * disk or a failed rename left a STALE project.json on disk while the
+     * editor happily reported "saved". Callers can now surface a real failure.
+     */
+    fun save(p: Project, alsoSnapshot: Boolean = false): Boolean {
+        return try {
             val dir = projectDir(p.id); dir.mkdirs(); mediaDir(p.id).mkdirs()
             val tmp = File(dir, "project.json.tmp")
             tmp.writeText(p.toJson().toString(2))
-            if (tmp.exists()) tmp.renameTo(projectFile(p.id))
-            if (alsoSnapshot) snapshot(p)
-        } catch (_: Exception) { }
+            if (!tmp.exists()) return false
+            val target = projectFile(p.id)
+            // renameTo fails on some filesystems when the destination exists
+            var ok = tmp.renameTo(target)
+            if (!ok) {
+                ok = try {
+                    tmp.copyTo(target, overwrite = true); tmp.delete(); true
+                } catch (_: Exception) { false }
+            }
+            if (ok && alsoSnapshot) snapshot(p)
+            ok
+        } catch (_: Exception) { false }
     }
 
     fun snapshot(p: Project) {
@@ -119,10 +136,37 @@ class ProjectStore(private val ctx: Context) {
         var name = src.name
         if (name.isBlank()) name = "clip_${System.currentTimeMillis()}.mp4"
         var f = File(dir, name)
+        // BUG-10: the old collision suffix appended AFTER the extension and
+        // produced "clip.mp4_1" — a file no file manager and no MIME sniffer
+        // recognises as video. Insert the index before the extension instead.
+        val dot = name.lastIndexOf('.')
+        val stem = if (dot > 0) name.substring(0, dot) else name
+        val ext = if (dot > 0) name.substring(dot) else ""
         var i = 1
-        while (f.exists()) { f = File(dir, "${name}_$i"); i++ }
+        while (f.exists()) { f = File(dir, stem + "_" + i + ext); i++ }
         src.copyTo(f, overwrite = false)
         return "media/${f.name}"
+    }
+
+    /**
+     * Delete media files under <project>/media that no reachable state refers
+     * to any more.
+     *
+     * [referenced] must contain the relPaths of the CURRENT project *and* of
+     * every undo/redo snapshot still reachable — otherwise undoing a delete
+     * would restore a layer whose bytes are gone. Returns the bytes reclaimed.
+     */
+    fun reclaimOrphanMedia(projectId: String, referenced: Set<String>): Long {
+        val dir = mediaDir(projectId)
+        if (!dir.isDirectory) return 0L
+        var freed = 0L
+        val keep = referenced.map { it.substringAfterLast('/') }.toHashSet()
+        for (f in dir.listFiles() ?: emptyArray()) {
+            if (!f.isFile || keep.contains(f.name)) continue
+            val size = f.length()
+            if (f.delete()) freed += size
+        }
+        return freed
     }
 
     /** Media file for a layer's relPath within a project. */

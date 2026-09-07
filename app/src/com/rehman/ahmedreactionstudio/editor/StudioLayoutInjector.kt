@@ -294,8 +294,11 @@ object StudioLayoutInjector {
                 val ay = (loc[1] + btn.height / 2f) - rootLoc[1]
                 activity.openWheelLevel(level(), ax, ay)
             }
+            // BUG-11: 48dp is the Material / WCAG 2.5.5 minimum. 46dp was a
+            // near-miss that still fails the guideline and mis-taps on the
+            // rail edge, which is the most-used navigation surface in the app.
             cell.addView(btn,
-                LinearLayout.LayoutParams(UI.dp(activity, 46), UI.dp(activity, 46)))
+                LinearLayout.LayoutParams(UI.dp(activity, 48), UI.dp(activity, 48)))
             val lb = TextView(activity).apply {
                 text = label
                 textSize = 9.5f
@@ -568,12 +571,20 @@ object StudioLayoutInjector {
     private fun bindPanels(activity: EditorActivity, sourcesPanel: SourcesPanel, mixerPanel: MixerPanel, propertiesPanel: View) {
         sourcesPanel.listener = object : SourcesPanel.Listener {
             override fun onSelect(id: String) { activity.select(id) }
-            override fun onToggleVisible(id: String) { activity.ctrl.toggleVisible(id) }
+            // BUG-02: route through the host so hiding always explains itself
+            // and offers UNDO, exactly like every other surface.
+            override fun onToggleVisible(id: String) {
+                activity.proj?.layerById(id)?.let { activity.hideSource(it) }
+            }
             override fun onAdd() { activity.pickMedia(true) }
             override fun onAddVideo() { activity.pickMedia(true) }
             override fun onAddImage() { activity.pickMedia(false) }
             override fun onRemove() { activity.removeSelectedSource() }
-            override fun onHide() { activity.selectedId?.let { activity.ctrl.toggleVisible(it) } }
+            override fun onHide() {
+                activity.selectedId?.let { id ->
+                    activity.proj?.layerById(id)?.let { activity.hideSource(it) }
+                }
+            }
             override fun onMoveUp(id: String) { activity.ctrl.moveZ(id, "up") }
             override fun onMoveDown(id: String) { activity.ctrl.moveZ(id, "down") }
             override fun onProperties() { 
@@ -588,7 +599,7 @@ object StudioLayoutInjector {
             override fun onSolo(id: String) { activity.ctrl.toggleSolo(id) }
             override fun onVolume(id: String, v: Float) {
                 val l = activity.proj?.layerById(id) ?: return
-                activity.pushUndoLight()
+                activity.pushUndoLight("volume:" + id)
                 if (activity.engineReady()) activity.engine.setVolume(l, v) else l.volume = v
                 activity.markDirty()
             }
@@ -602,7 +613,8 @@ object StudioLayoutInjector {
             setOnClickListener { activity.togglePlay() }
         }
         activity.playBtn = playBtn
-        bar.addView(playBtn, LinearLayout.LayoutParams(UI.dp(activity, 44), UI.dp(activity, 44)))
+        // BUG-11: transport play/pause raised 44 -> 48dp
+        bar.addView(playBtn, LinearLayout.LayoutParams(UI.dp(activity, 48), UI.dp(activity, 48)))
 
         // Same visual grammar and height as the play icon so the whole row is
         // one aligned baseline. recordBtn is a TextView (per its declared type)
@@ -622,7 +634,8 @@ object StudioLayoutInjector {
         recG.cornerRadius = UI.dpf(activity, 17f)
         recG.setColor(Color.argb(200, 200, 34, 34))
         recBtn.background = recG
-        val recLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, 34))
+        // BUG-11: record chip raised 34 -> 48dp (it is a primary action)
+        val recLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, 48))
         recLp.setMargins(UI.dp(activity, 2), 0, UI.dp(activity, 2), 0)
         recBtn.layoutParams = recLp
         bar.addView(recBtn)

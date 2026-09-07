@@ -132,10 +132,13 @@ object UI {
         t.setTextColor(FG)
         t.textSize = 12f
         t.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        t.setPadding(dp(ctx, 10), 0, dp(ctx, 10), 0)
-        t.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(ctx, 34))
+        t.setPadding(dp(ctx, 14), 0, dp(ctx, 14), 0)
+        // BUG-11: chips are real tap targets (Home ✕ / Copy, Diagnostics,
+        // aspect pickers). 34dp failed the 48dp minimum everywhere they appear.
+        t.minWidth = dp(ctx, 48)
+        t.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(ctx, 48))
         val g = GradientDrawable()
-        g.cornerRadius = dpf(ctx, 17f)
+        g.cornerRadius = dpf(ctx, 24f)
         g.setColor(BG3)
         g.setStroke(dp(ctx, 1), Color.argb(70, 255, 255, 255))
         t.background = g
