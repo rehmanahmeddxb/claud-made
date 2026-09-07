@@ -1219,7 +1219,24 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     // ================= empty state =================
 
-    private fun updateEmptyState(vararg args: Any?) { }
+    /** P1-6: the empty hint shows only when there is nothing on the canvas. */
+    private fun updateEmptyState() {
+        if (!this::emptyOverlay.isInitialized) return
+        emptyOverlay.visibility =
+            if (proj?.layers?.isEmpty() == true) View.VISIBLE else View.GONE
+    }
+
+    /** P1-6: empty-hint tap = open the Sources wheel (same as the rail). */
+    fun emptyHintTap() {
+        openWheelLevel(RadialMenus.sources(this), -1f, -1f)
+    }
+
+    internal fun shouldShowCoach(): Boolean =
+        !editorPrefs().getBoolean("coach_done", false)
+
+    internal fun markCoachDone() {
+        editorPrefs().edit().putBoolean("coach_done", true).apply()
+    }
 
     private fun onTick(ms: Long) {
         // Always keep the stage painting even when the experimental layout

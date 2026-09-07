@@ -640,6 +640,15 @@ Lone 40dp back button replaced by a full top strip: 48dp back, project name + me
 
 **On-device verify:** strip shows correct name/meta/aspect on open; meta flips ●/✓ on edit/save; aspect chip opens picker and rotates canvas (undoable); undo/redo dim when stacks empty and work in one tap otherwise; strip never overlaps canvas.
 
+### 2026-09-07 — P1-6 fixed (onboarding + discoverability)
+
+- **Real empty state:** `updateEmptyState()` implemented (was a stub — the hint floated over the canvas forever). Overlay shows only with zero layers.
+- **Tappable honest hint:** "No sources yet — tap here or Layers → …" pill (the old text pointed at a ⊕ that doesn't exist); tap opens the Sources wheel.
+- **Rail labels:** each trigger now has a short label (Sources/Audio/Play/Flash/Studio) under its icon; wider rail auto-clears the canvas via the P0-4 measured insets.
+- **First-run coach:** one-time overlay ("Make your first reaction": Layers → canvas gestures → Play/Studio), dismiss via Got-it/scrim, `coach_done` persisted.
+
+**On-device verify:** fresh install → coach on first editor open, never again; empty project → tappable hint pill, opens Sources; add source → hint gone; rail labels legible, rail doesn't cover canvas.
+
 ---
 
 *End of audit. Next step: confirm P0-1 on a device (2 minutes), then work P0 in the suggested order. Say the word and I'll start implementing — P0-1 + P0-6 + quick wins first.*

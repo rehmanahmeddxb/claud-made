@@ -112,9 +112,19 @@ object StudioLayoutInjector {
         // panel that no longer exists
         activity.emptyOverlay.orientation = LinearLayout.VERTICAL
         activity.emptyOverlay.gravity = Gravity.CENTER
-        val emptyHint = UI.label(activity, "Tap ⊕ Sources to add your first camera or video",
-            dim = true, size = 13f)
+        // P1-6: tappable + honest (names the real entry point; no \u2295 exists anywhere).
+        val emptyHint = UI.label(activity,
+            "No sources yet — tap here or Layers \u2192\nto add your first camera or video",
+            dim = false, size = 14f)
         emptyHint.gravity = Gravity.CENTER
+        emptyHint.setPadding(UI.dp(activity, 20), UI.dp(activity, 14),
+            UI.dp(activity, 20), UI.dp(activity, 14))
+        emptyHint.background = Ic.pill(activity, Color.argb(190, 20, 23, 31), 16f,
+            Color.argb(110, 255, 255, 255))
+        emptyHint.isClickable = true
+        emptyHint.isFocusable = true
+        emptyHint.contentDescription = "Add your first source"
+        emptyHint.setOnClickListener { activity.emptyHintTap() }
         activity.emptyOverlay.addView(emptyHint, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(activity.emptyOverlay, FrameLayout.LayoutParams(
@@ -245,9 +255,15 @@ object StudioLayoutInjector {
         wheelRail.background = railBg
         wheelRail.setPadding(UI.dp(activity, 4), UI.dp(activity, 8), UI.dp(activity, 4), UI.dp(activity, 8))
 
-        fun wheelTrigger(icon: Int, desc: String, level: () -> RadialMenuView.Level): IconBtn {
+        // P1-6: icon + short text label (the icon-only rail was undiscoverable).
+        fun wheelTrigger(icon: Int, desc: String, label: String,
+                         level: () -> RadialMenuView.Level): IconBtn {
+            val cell = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                minimumWidth = UI.dp(activity, 56)
+            }
             val btn = IconBtn(activity)
-            btn.layoutParams = IconBtn.sized(activity, 46)
             btn.setIcon(icon, Color.WHITE, desc)
             btn.setOnClickListener {
                 val loc = IntArray(2); val rootLoc = IntArray(2)
@@ -257,27 +273,40 @@ object StudioLayoutInjector {
                 val ay = (loc[1] + btn.height / 2f) - rootLoc[1]
                 activity.openWheelLevel(level(), ax, ay)
             }
-            val lp = LinearLayout.LayoutParams(UI.dp(activity, 46), UI.dp(activity, 46))
+            cell.addView(btn,
+                LinearLayout.LayoutParams(UI.dp(activity, 46), UI.dp(activity, 46)))
+            val lb = TextView(activity).apply {
+                text = label
+                textSize = 9.5f
+                maxLines = 1
+                gravity = Gravity.CENTER
+                setTextColor(UI.FG2)
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            }
+            cell.addView(lb, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            val lp = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             lp.setMargins(0, UI.dp(activity, 4), 0, UI.dp(activity, 4))
-            wheelRail.addView(btn, lp)
+            wheelRail.addView(cell, lp)
             return btn
         }
 
         // 1. Sources — every current source, show/hide, delete, add new
-        wheelTrigger(R.drawable.ic_layers, "Sources") { RadialMenus.sources(activity) }
+        wheelTrigger(R.drawable.ic_layers, "Sources", "Sources") { RadialMenus.sources(activity) }
         // 2. Audio mixer — mute/volume per source + mic gain
-        wheelTrigger(R.drawable.ic_volume, "Audio") { RadialMenus.audioWheel(activity) }
+        wheelTrigger(R.drawable.ic_volume, "Audio", "Audio") { RadialMenus.audioWheel(activity) }
         // 3. Play/Stop — master playback + composite recording (auto-export on stop)
-        wheelTrigger(R.drawable.ic_play, "Play / Record") { RadialMenus.playStop(activity) }
+        wheelTrigger(R.drawable.ic_play, "Play / Record", "Play") { RadialMenus.playStop(activity) }
         // 4. Flashlight — front/back/both LED + screen light
-        wheelTrigger(R.drawable.ic_flash, "Flash") { RadialMenus.lightRoot(activity) }
+        wheelTrigger(R.drawable.ic_flash, "Flash", "Flash") { RadialMenus.lightRoot(activity) }
         // 5. Studio — the root ring: Canvas · Export · Project (aspect ratio,
         //    background, quick export + settings, rename, save, undo/redo,
         //    snapshot, diagnostics). P0-1: root() was previously reachable
         //    ONLY via a hidden long-press on empty canvas, so Canvas/Export/
         //    Project were effectively undiscoverable. This trigger replaces
         //    the dead "Test" placeholder (P0-6) — no dead buttons on the rail.
-        activity.studioBtn = wheelTrigger(R.drawable.ic_wheel, "Studio") { RadialMenus.root(activity) }
+        activity.studioBtn = wheelTrigger(R.drawable.ic_wheel, "Studio", "Studio") { RadialMenus.root(activity) }
 
         root.addView(wheelRail, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -399,6 +428,57 @@ object StudioLayoutInjector {
 
         // ---- P1-1: project name/meta + aspect + undo/redo state ----
         activity.syncTopStrip()
+
+        // ---- P1-6: first-run coach (once ever, dismisses to the canvas) ----
+        if (activity.shouldShowCoach()) {
+            val scrim = View(activity).apply {
+                setBackgroundColor(Color.argb(170, 4, 5, 8))
+                isClickable = true
+                isFocusable = true
+            }
+            val coach = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                background = Ic.pill(activity, Color.argb(250, 20, 23, 31), 16f,
+                    Color.argb(100, 255, 255, 255))
+                setPadding(UI.dp(activity, 20), UI.dp(activity, 18),
+                    UI.dp(activity, 20), UI.dp(activity, 16))
+            }
+            val ct = TextView(activity).apply {
+                text = "Make your first reaction"
+                setTextColor(Color.WHITE)
+                textSize = 17f
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            }
+            coach.addView(ct)
+            val steps = TextView(activity).apply {
+                text = "1 \u00b7 Add camera + video from Layers (right rail)\n" +
+                    "2 \u00b7 Drag, pinch and resize right on the canvas\n" +
+                    "3 \u00b7 Record from Play, export from Studio"
+                setTextColor(UI.FG)
+                textSize = 13f
+                setLineSpacing(UI.dpf(activity, 4f), 1f)
+                setPadding(0, UI.dp(activity, 10), 0, UI.dp(activity, 14))
+            }
+            coach.addView(steps)
+            fun dismissCoach() {
+                activity.markCoachDone()
+                try { root.removeView(coach) } catch (_: Exception) { }
+                try { root.removeView(scrim) } catch (_: Exception) { }
+            }
+            val gotIt = UI.btn(activity, "Got it", accent = true).apply {
+                setOnClickListener { dismissCoach() }
+            }
+            coach.addView(gotIt, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(activity, 50)))
+            scrim.setOnClickListener { dismissCoach() }
+            root.addView(scrim, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            root.addView(coach, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER).apply {
+                setMargins(UI.dp(activity, 28), 0, UI.dp(activity, 28), 0)
+            })
+        }
     }
 
     private fun bindPanels(activity: EditorActivity, sourcesPanel: SourcesPanel, mixerPanel: MixerPanel, propertiesPanel: View) {
