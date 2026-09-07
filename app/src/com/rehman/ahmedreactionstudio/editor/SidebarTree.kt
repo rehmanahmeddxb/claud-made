@@ -81,7 +81,7 @@ object SidebarTree {
                     Item(R.drawable.ic_down, "Move down",
                         action = { h.ctrl.moveZ(l.id, "down") }),
                     Item(R.drawable.ic_copy, "Duplicate",
-                        action = { /* dup handled by host */ }),
+                        action = { h.duplicateSource(l) }),
                     Item(R.drawable.ic_delete, "Remove", danger = true,
                         action = { h.deleteSource(l) })
                 ),
@@ -123,7 +123,7 @@ object SidebarTree {
         val s = h.selected()
         if (s == null) {
             return Section("controls", R.drawable.ic_settings, "Source Controls", null,
-                listOf(Item(R.drawable.ic_info, "Select a source first", enabled = false) {}))
+                listOf(Item(R.drawable.ic_info, "Select a source first", enabled = false, action = null)))
         }
         val items = mutableListOf<Item>()
 
@@ -227,7 +227,7 @@ object SidebarTree {
 
         if (clips.isEmpty() && live == null) {
             items.add(Item(R.drawable.ic_info, "No audio sources yet",
-                enabled = false) {})
+                enabled = false, action = null))
         }
 
         return Section("audio", R.drawable.ic_volume, "Audio",

@@ -655,12 +655,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      * values), so opening a panel, expanding the dock, selecting a source or
      * rotating the phone all keep the whole composition on screen.
      */
-    private fun applyViewportInsets(vararg args: Any?) {
-        // topBar drew a fixed 8dp top padding regardless of the status bar /
-        // cutout height, so on edge-to-edge devices the status bar overlapped
-        // the row and clipped it. Add the live system inset on top of the
-        // designer's base padding instead of a hardcoded constant.
-        if (this::topBar.isInitialized) {
+    fun applyViewportInsets(vararg args: Any?) {
+        if (this::stage.isInitialized) {
+            stage.setViewportInsets(0, 0, 0, 0)
+        }
+        if (this::topBar.isInitialized && topBar.parent != null) {
             val base = UI.dp(this, 8)
             topBar.setPadding(topBar.paddingLeft, base + sysT, topBar.paddingRight, base)
         }
@@ -1440,7 +1439,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     /** P1-6: empty-hint tap = open the Sources wheel (same as the rail). */
     fun emptyHintTap() {
-        openWheelLevel(RadialMenus.sources(this), -1f, -1f)
+        toggleSidebar()
     }
 
     internal fun shouldShowCoach(): Boolean =
@@ -3178,6 +3177,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     override fun hideSource(l: Layer) {
         ctrl.toggleVisible(l.id)
         showHideFeedback(l)
+    }
+
+    override fun duplicateSource(l: Layer) {
+        duplicateLayer(l)
     }
 
     /**
