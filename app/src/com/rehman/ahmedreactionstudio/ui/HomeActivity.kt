@@ -31,6 +31,27 @@ class HomeActivity : Activity() {
     private lateinit var store: ProjectStore
     private val projects = ArrayList<Project>()
     private lateinit var adapter: ProjectsAdapter
+    private lateinit var emptyState: LinearLayout
+    private lateinit var listView: ListView
+
+    /**
+     * BUG-05: one shared decoder thread and a bounded bitmap cache.
+     *
+     * The previous code started `Thread {}` inside getView — an unbounded
+     * number of threads racing recycled rows, with no cache, so scrolling back
+     * up decoded everything again.
+     */
+    private val thumbExec: java.util.concurrent.ExecutorService =
+        java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "home-thumbs").apply { isDaemon = true }
+        }
+
+    /** ~4 MB of decoded thumbnails is plenty for a project list. */
+    private val thumbCache = object :
+        android.util.LruCache<String, android.graphics.Bitmap>(4 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: android.graphics.Bitmap): Int =
+            value.byteCount
+    }
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -51,6 +72,21 @@ class HomeActivity : Activity() {
             store.load(id)?.let { projects.add(it) }
         }
         adapter.notifyDataSetChanged()
+        updateEmptyState()
+    }
+
+    /** BUG-06: a first-run user used to get a blank screen under the header. */
+    private fun updateEmptyState() {
+        if (!this::emptyState.isInitialized) return
+        val empty = projects.isEmpty()
+        emptyState.visibility = if (empty) View.VISIBLE else View.GONE
+        listView.visibility = if (empty) View.GONE else View.VISIBLE
+    }
+
+    override fun onDestroy() {
+        thumbExec.shutdownNow()
+        thumbCache.evictAll()
+        super.onDestroy()
     }
 
     private fun buildUi() {
@@ -102,6 +138,7 @@ class HomeActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         adapter = ProjectsAdapter()
         list.adapter = adapter
+        listView = list
         list.onItemClickListener = AdapterView.OnItemClickListener { _, _, pos, _ ->
             openProject(projects[pos].id)
         }
@@ -112,6 +149,46 @@ class HomeActivity : Activity() {
             true
         }
         root.addView(list)
+
+        // ---- BUG-06: empty state (occupies the same slot as the list)
+        emptyState = LinearLayout(this)
+        emptyState.orientation = LinearLayout.VERTICAL
+        emptyState.gravity = Gravity.CENTER
+        emptyState.visibility = View.GONE
+        emptyState.layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        val emptyIcon = TextView(this)
+        emptyIcon.text = "\u25B6"
+        emptyIcon.textSize = 44f
+        emptyIcon.gravity = Gravity.CENTER
+        emptyIcon.setTextColor(Color.argb(70, 255, 255, 255))
+        emptyState.addView(emptyIcon)
+        val emptyTitle = TextView(this)
+        emptyTitle.text = "No projects yet"
+        emptyTitle.textSize = 17f
+        emptyTitle.gravity = Gravity.CENTER
+        emptyTitle.setTextColor(UI.FG)
+        emptyTitle.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        UI.margin(emptyTitle, 0, 12, 0, 0, this)
+        emptyState.addView(emptyTitle)
+        val emptyBody = TextView(this)
+        emptyBody.text =
+            "Create a project, then add your reaction camera,\na video to react to, images or a screen recording."
+        emptyBody.textSize = 12.5f
+        emptyBody.gravity = Gravity.CENTER
+        emptyBody.setTextColor(UI.FG2)
+        emptyBody.setLineSpacing(UI.dpf(this, 4f), 1f)
+        UI.margin(emptyBody, 0, 6, 0, 0, this)
+        emptyState.addView(emptyBody)
+        val emptyCta = UI.btn(this, "Create your first project", accent = true)
+        emptyCta.contentDescription = "Create your first project"
+        val ectaLp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(this, 48))
+        ectaLp.topMargin = UI.dp(this, 18)
+        emptyCta.layoutParams = ectaLp
+        emptyCta.setOnClickListener { showNewDialog() }
+        emptyState.addView(emptyCta)
+        root.addView(emptyState)
 
         // ---- new project button
         val newBtn = UI.btn(this, "+  New project", accent = true)
@@ -200,7 +277,7 @@ class HomeActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         UI.margin(aspectRow, 0, 14, 0, 6, this)
         val chips = HashMap<Aspect, TextView>()
-        val rowLp = LinearLayout.LayoutParams(0, UI.dp(this, 40), 1f)
+        val rowLp = LinearLayout.LayoutParams(0, UI.dp(this, 48), 1f)   // BUG-11
         for (a in Aspect.entries) {
             val c = UI.chip(this, a.code)
             c.contentDescription = "Canvas aspect ratio ${a.code}"
@@ -254,6 +331,28 @@ class HomeActivity : Activity() {
         }
     }
 
+    /**
+     * BUG-05: a recycling adapter.
+     *
+     * The old getView() ignored `convert` entirely and rebuilt ~12 views for
+     * every card on every bind, then started a RAW THREAD per bind to decode
+     * the thumbnail. With thumbnails actually being written now (BUG-04) that
+     * combination janks the list and churns threads. This version:
+     *   - builds the hierarchy once and reuses it through a ViewHolder,
+     *   - decodes on ONE shared background executor, not a thread per row,
+     *   - caches decoded bitmaps in a bounded LRU so scrolling back is free,
+     *   - guards recycled rows with a tag so a late decode cannot paint the
+     *     wrong card.
+     */
+    private class Holder(
+        val card: LinearLayout,
+        val thumb: ImageView,
+        val placeholder: TextView,
+        val name: TextView,
+        val meta: TextView,
+        val menuBtn: TextView
+    )
+
     private inner class ProjectsAdapter : BaseAdapter() {
         override fun getCount(): Int = projects.size
         override fun getItem(pos: Int): Any = projects[pos]
@@ -262,97 +361,137 @@ class HomeActivity : Activity() {
         override fun getView(pos: Int, convert: View?, parent: ViewGroup?): View {
             val ctx = this@HomeActivity
             val p = projects[pos]
-            val card = LinearLayout(ctx)
-            card.orientation = LinearLayout.HORIZONTAL
-            card.setPadding(UI.dp(ctx, 12), UI.dp(ctx, 10), UI.dp(ctx, 12), UI.dp(ctx, 10))
-            val g = GradientDrawable()
-            g.cornerRadius = UI.dpf(ctx, 14f)
-            g.setColor(UI.BG2)
-            g.setStroke(UI.dp(ctx, 1), Color.argb(50, 255, 255, 255))
-            card.background = g
+            val holder: Holder
+            val card: LinearLayout
 
-            val lp = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(ctx, 92))
-            lp.setMargins(0, 0, 0, UI.dp(ctx, 8))
-            card.layoutParams = lp
+            if (convert != null && convert.tag is Holder) {
+                holder = convert.tag as Holder
+                card = holder.card
+            } else {
+                card = LinearLayout(ctx)
+                card.orientation = LinearLayout.HORIZONTAL
+                card.gravity = Gravity.CENTER_VERTICAL
+                card.setPadding(UI.dp(ctx, 12), UI.dp(ctx, 10), UI.dp(ctx, 12), UI.dp(ctx, 10))
+                val g = GradientDrawable()
+                g.cornerRadius = UI.dpf(ctx, 14f)
+                g.setColor(UI.BG2)
+                g.setStroke(UI.dp(ctx, 1), Color.argb(50, 255, 255, 255))
+                card.background = g
+                card.layoutParams = android.widget.AbsListView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(ctx, 96))
 
-            // thumb
-            val frame = FrameLayout(ctx)
-            val flp = LinearLayout.LayoutParams(UI.dp(ctx, 66), UI.dp(ctx, 66))
-            frame.layoutParams = flp
-            val thumb = ImageView(ctx)
-            val imgFile = store.thumbFile(p.id)
-            val fg = GradientDrawable()
-            fg.cornerRadius = UI.dpf(ctx, 8f)
-            fg.setColor(UI.BG3)
-            frame.background = fg
-            // Thumbnails decode off the UI thread (downsampled: the view is 66dp)
-            // so list scrolling never janks on big snapshot files. The tag
-            // guards against recycled rows receiving a stale bitmap.
-            thumb.tag = null
-            thumb.setImageDrawable(null)
-            thumb.scaleType = ImageView.ScaleType.CENTER_CROP
-            if (imgFile.exists()) {
-                val path = imgFile.absolutePath
-                thumb.tag = path
-                Thread {
-                    try {
-                        val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
-                        val bmp = BitmapFactory.decodeFile(path, opts)
-                        thumb.post {
-                            if (thumb.tag == path && bmp != null) thumb.setImageBitmap(bmp)
-                            else try { bmp?.recycle() } catch (_: Exception) { }
-                        }
-                    } catch (_: Exception) { }
-                }.start()
+                val frame = FrameLayout(ctx)
+                frame.layoutParams = LinearLayout.LayoutParams(UI.dp(ctx, 72), UI.dp(ctx, 72))
+                val fg = GradientDrawable()
+                fg.cornerRadius = UI.dpf(ctx, 8f)
+                fg.setColor(UI.BG3)
+                frame.background = fg
+                frame.clipToOutline = true
+
+                // shown until (or unless) a real thumbnail exists
+                val placeholder = TextView(ctx)
+                placeholder.text = "\u25B6"
+                placeholder.gravity = Gravity.CENTER
+                placeholder.setTextColor(Color.argb(90, 255, 255, 255))
+                placeholder.textSize = 20f
+                frame.addView(placeholder, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+                val thumb = ImageView(ctx)
+                thumb.scaleType = ImageView.ScaleType.CENTER_CROP
+                frame.addView(thumb, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                card.addView(frame)
+
+                val col = UI.col(ctx, true)
+                col.layoutParams = LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                UI.margin(col, 12, 0, 8, 0, ctx)
+                val nm = TextView(ctx)
+                nm.setTextColor(UI.FG)
+                nm.textSize = 15f
+                nm.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                nm.maxLines = 1
+                col.addView(nm)
+                val meta = TextView(ctx)
+                meta.setTextColor(UI.FG2)
+                meta.textSize = 11.5f
+                meta.maxLines = 1
+                UI.margin(meta, 0, 2, 0, 0, ctx)
+                col.addView(meta)
+                card.addView(col)
+
+                // BUG-06 / hygiene: the per-card ✕ is GONE.
+                //
+                // A 34dp delete chip sitting next to a same-looking "Copy"
+                // chip, inside a row whose whole job is "tap to open", is a
+                // mis-tap waiting to happen for an irreversible action. One
+                // ⋮ opens the same Open/Rename/Duplicate/Delete sheet that
+                // long-press already showed, so nothing became less reachable.
+                val menuBtn = TextView(ctx)
+                menuBtn.text = "\u22EE"
+                menuBtn.gravity = Gravity.CENTER
+                menuBtn.setTextColor(UI.FG)
+                menuBtn.textSize = 18f
+                menuBtn.layoutParams = LinearLayout.LayoutParams(
+                    UI.dp(ctx, 48), UI.dp(ctx, 48))
+                val mg = GradientDrawable()
+                mg.cornerRadius = UI.dpf(ctx, 24f)
+                mg.setColor(Color.argb(30, 255, 255, 255))
+                menuBtn.background = mg
+                card.addView(menuBtn)
+
+                holder = Holder(card, thumb, placeholder, nm, meta, menuBtn)
+                card.tag = holder
             }
-            frame.addView(thumb, FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            card.addView(frame)
 
-            val col = UI.col(ctx, true)
-            col.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
-            UI.margin(col, 12, 0, 8, 0, ctx)
+            holder.name.text = p.name
+            holder.meta.text = "${p.aspect.code}  \u00b7  ${p.layers.size} layer" +
+                (if (p.layers.size == 1) "" else "s") + "  \u00b7  " +
+                UI.fmtTime(p.durationMs()) + "  \u00b7  " + UI.relTime(p.updatedAt)
+            holder.card.contentDescription =
+                "Project ${p.name}, ${p.aspect.code}, ${p.layers.size} layers"
+            holder.menuBtn.contentDescription = "More actions for ${p.name}"
+            holder.menuBtn.setOnClickListener { showProjectMenu(p) }
 
-            val nm = TextView(ctx)
-            nm.text = p.name
-            nm.setTextColor(UI.FG)
-            nm.textSize = 15f
-            nm.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            nm.maxLines = 1
-            col.addView(nm)
-
-            val meta = TextView(ctx)
-            meta.text = "${p.aspect.code}  \u00b7  ${p.layers.size} layer" +
-                (if (p.layers.size == 1) "" else "s") + "  \u00b7  " + UI.fmtTime(p.durationMs()) +
-                "  \u00b7  " + UI.relTime(p.updatedAt)
-            meta.setTextColor(UI.FG2)
-            meta.textSize = 11.5f
-            UI.margin(meta, 0, 2, 0, 0, ctx)
-            col.addView(meta)
-
-            card.addView(col)
-
-            // actions
-            val del = UI.chip(ctx, "\u2715")
-            del.contentDescription = "Delete project ${p.name}"
-            del.setTextColor(UI.DANGER)
-            del.setOnClickListener { confirmDelete(p) }
-            val actionCol = UI.col(ctx, true)
-            actionCol.layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT)
-            actionCol.gravity = Gravity.CENTER_VERTICAL or Gravity.END
-            val dup = UI.chip(ctx, "Copy")
-            dup.contentDescription = "Duplicate project ${p.name}"
-            dup.setOnClickListener {
-                store.duplicate(p.id)
-                refresh()
-            }
-            actionCol.addView(dup)
-            UI.margin(del, 0, 6, 0, 0, ctx)
-            actionCol.addView(del)
-            card.addView(actionCol)
+            bindThumb(holder, p)
             return card
+        }
+
+        private fun bindThumb(holder: Holder, p: Project) {
+            val f = store.thumbFile(p.id)
+            val key = p.id + ":" + (if (f.exists()) f.lastModified() else 0L)
+            holder.thumb.tag = key
+            val cached = thumbCache[key]
+            if (cached != null) {
+                holder.thumb.setImageBitmap(cached)
+                holder.placeholder.visibility = View.GONE
+                return
+            }
+            holder.thumb.setImageDrawable(null)
+            holder.placeholder.visibility = View.VISIBLE
+            if (!f.exists()) return
+            val path = f.absolutePath
+            thumbExec.execute {
+                val bmp = try {
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(path, bounds)
+                    // downsample to roughly the 72dp the card actually shows
+                    val target = UI.dp(this@HomeActivity, 72).coerceAtLeast(1)
+                    var sample = 1
+                    while (bounds.outWidth / (sample * 2) >= target) sample *= 2
+                    BitmapFactory.decodeFile(path,
+                        BitmapFactory.Options().apply { inSampleSize = sample })
+                } catch (_: Throwable) { null }
+                if (bmp == null) return@execute
+                holder.thumb.post {
+                    thumbCache.put(key, bmp)
+                    if (holder.thumb.tag == key) {
+                        holder.thumb.setImageBitmap(bmp)
+                        holder.placeholder.visibility = View.GONE
+                    }
+                }
+            }
         }
     }
 }

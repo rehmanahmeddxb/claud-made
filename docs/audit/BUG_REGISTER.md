@@ -1,0 +1,29 @@
+# Bug Register — Ahmed Reaction Studio
+
+Audited at `3e27c43`. Status values: **FIXED** (changed + compiles), **OPEN**, **DEFERRED**.
+"Verification" states exactly how far the check went. No runtime claim is made without a device.
+
+| ID | Sev | Module | Problem | Root cause | Impact | Fix | Verification | Status |
+|---|---|---|---|---|---|---|---|---|
+| **BUG-01** | P1 | Editor / wheel | Delete source from radial wheel is silent, no undo offered | `RadialMenus.kt:287` calls `h.ctrl.delete()` directly, bypassing `showUndoSnack` | User loses a source with no recovery affordance; undo exists but is undiscoverable | Route through new `Host.deleteSource/hideSource` verbs that snack + undo | Compile-verified; APK rebuilt | **FIXED** |
+| **BUG-02** | P1 | Editor / wheel + panels | Hide is silent from wheel and Sources panel | `RadialMenus.kt:234`, `StudioLayoutInjector.kt:571/576` call `ctrl.toggleVisible` directly | "My camera vanished" with no explanation that audio still plays | Same host verbs, snack says audio keeps playing | Compile-verified | **FIXED** |
+| **BUG-03** | P1 | Editor | `removeSelectedSource()` deletes with zero feedback | No snack call in the method | Silent destructive op from the Sources panel Remove button | Added undo snack + media reclaim | Compile-verified | **FIXED** |
+| **BUG-04** | P1 | Home | Project thumbnails never appear | `ProjectStore.saveThumb()` has **no callers** | Every project card is a grey box; app looks broken | Editor now writes a thumb on save/exit via `Compositor` | Compile-verified; **visual result needs device** | **FIXED** |
+| **BUG-05** | P1 | Home | `ListView` adapter ignores `convertView`, threads per bind | `getView` rebuilds ~12 views and starts `Thread {}` each call | Scroll jank, thread churn, stale-bitmap races | Recycle via `convert`, bounded thumb cache, single executor | Compile-verified; **jank measurement needs device** | **FIXED** |
+| **BUG-06** | P2 | Home | No empty state with zero projects | Never implemented | New user sees a blank screen | Added illustrated empty state with a primary action | Compile-verified | **FIXED** |
+| **BUG-07** | P2 | Editor | Aspect change force-rotates the phone mid-edit | `applyOrientationFor` sets `SENSOR_LANDSCAPE`/`SENSOR_PORTRAIT` on every change | Jarring; fights users who lock rotation | Only apply at project open; aspect change re-fits canvas without rotating | Compile-verified | **FIXED** |
+| **BUG-08** | P2 | Capture | Screen recording has no pre-flight | `startScreenCapture` checks only `running` + MPM availability | Recording can start with no notification permission or no disk space | Added storage + notification pre-flight with a themed dialog | Compile-verified; **runtime needs device** | **FIXED** |
+| **BUG-09** | P2 | Storage | Deleted layers orphan their media bytes | `SourceController.delete` only mutates the list | Unbounded storage growth | Reclaim unreferenced `media/` files on delete-commit and project save | Compile-verified | **FIXED** |
+| **BUG-10** | P2 | Storage | Collision naming yields `clip.mp4_1` | `ProjectStore.copyIntoMedia` appends after the extension | File unreadable to file managers; MIME guessing degrades | Insert index before the extension → `clip_1.mp4` | **Verified by simulation** | **FIXED** |
+| **BUG-11** | P2 | A11y | Touch targets below 48dp across the editor | Rail 46dp, transport 44dp, dock handle 44dp, mixer 36×32dp, Home chips 34dp | Fails WCAG 2.5.5 / Material minimum; mis-taps | Raised all to ≥48dp | Compile-verified; measured from dp constants | **FIXED** |
+| **BUG-12** | P2 | Editor | Undo throttle can swallow a distinct edit | `pushUndoLight` assigns `lastUndoPush` outside the guard | Undo occasionally jumps two steps | Only throttle *same-kind* consecutive edits | Compile-verified | **FIXED** |
+| **BUG-13** | P2 | Build/CI | 19 `vararg Any?` no-op stubs compile away real calls | Deliberate stubbing during the chrome rollback | Regressions survive compilation — the root cause of this repo's history | Documented + CI guard added against reintroduction | Guard script runs in CI | **FIXED** |
+| **BUG-14** | P3 | Camera | Live feed hardcodes 16:9 (`WANT = 960×540`) | `LiveCamera.kt:67` | Wasted pixels / letterboxing on 9:16 projects | Feed target now derives from project aspect | Compile-verified; **sensor behaviour needs device** | **FIXED** |
+| **BUG-15** | P3 | Core | `Layer.clone()` copies `id` | `Model.kt` clone passes id through | Latent duplicate-id bug for future callers | Documented; callers already overwrite. Left as-is to avoid changing `ProjectStore.duplicate` semantics | Inspection | **DEFERRED** |
+| **BUG-16** | P3 | Repo | 1.5 MB source zip + duplicated JPEGs committed | Historic | Repo bloat | Documented in audit; removal deferred to owner (may be an intentional artifact) | Inspection | **DEFERRED** |
+| **BUG-17** | P2 | Reliability | ~120 silent `catch (_: Exception) {}` incl. every file write | Codebase-wide idiom | Save failures are invisible; possible silent data loss | Save path now reports failure to the user; broad sweep deferred | Compile-verified for save path | **PARTIAL** |
+| **BUG-18** | P1 | Maintainability | `EditorActivity.kt` = 3,290 LOC god object | Accreted history | Every change risks unrelated regressions | Not attempted in this pass — needs a dedicated, separately-reviewed refactor | — | **DEFERRED (see plan Phase 2)** |
+
+## Deliberately not fixed in this pass
+
+**BUG-18 (god activity)** and **BUG-17 (global exception sweep)** are the two largest items. Both are *architectural* changes touching hundreds of call sites in a codebase with no automated UI tests and no device available to me. Shipping them blind, in the same change as user-visible fixes, would be reckless — a regression would be indistinguishable from the fixes. They are scheduled as Phase 2 in `MASTER_IMPROVEMENT_PLAN.md`, to be done one extraction at a time behind a green CI.

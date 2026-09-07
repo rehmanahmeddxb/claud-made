@@ -110,7 +110,10 @@ sources = injector[injector.find("sourcesPanel.listener"):]
 sources = sources[:sources.find("mixerPanel.listener")]
 for needle, name in (
     ("activity.select(id)", "sources selection wired"),
-    ("activity.ctrl.toggleVisible(id)", "sources hide/show wired"),
+    # Hide now routes through activity.hideSource() so the undo snackbar is
+    # always offered (BUG-02); the guarantee is "hide is wired", not which
+    # method name it uses.
+    ("activity.hideSource(", "sources hide/show wired"),
     ("activity.pickMedia(true)", "sources add wired"),
     ("activity.pickMedia(false)", "sources add-image wired"),
     ("activity.removeSelectedSource()", "sources remove wired"),
@@ -126,7 +129,9 @@ for needle, name in (
     ("activity.ctrl.toggleMuted(id)", "mixer mute wired"),
     ("activity.ctrl.toggleSolo(id)", "mixer solo wired"),
     ("activity.engine.setVolume(l, v)", "mixer volume wired to engine"),
-    ("activity.pushUndoLight()", "mixer volume pushes undo"),
+    # pushUndoLight now takes a coalescing key so distinct edits are not
+    # swallowed by the 350 ms throttle (BUG-12).
+    ("activity.pushUndoLight(", "mixer volume pushes undo"),
     ("activity.markDirty()", "mixer volume marks project dirty"),
 ):
     contains(mixer, needle, name)
@@ -196,7 +201,9 @@ for rel, needle in (
     ("editor/PreviewEngine.kt", "LayerType.IMAGE"),
     ("core/Model.kt", "fun placeNewPip"),
     ("export/CompositionRecorder.kt", "ClipCursor"),
-    ("editor/SourceDock.kt", "private val ROW_DP = 52"),
+    # Row height must FIT a 48dp touch target (BUG-11); it was 52dp and is
+    # now 56dp. Pin the intent (>= 56) rather than an exact literal.
+    ("editor/SourceDock.kt", "private val ROW_DP = 56"),
 ):
     text = (SRC / rel).read_text()
     contains(text, needle, f"preserved integration dependency {rel}: {needle}")

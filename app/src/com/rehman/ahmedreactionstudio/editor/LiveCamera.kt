@@ -119,6 +119,26 @@ class LiveCamera(
 
     private var sensorOrientation = 90
     private var feedSize = WANT
+
+    /**
+     * BUG-14: the capture target follows the PROJECT aspect.
+     *
+     * The feed size used to be hardcoded to 960x540 (16:9) and the closest
+     * sensor output was chosen purely by pixel area, so a 9:16 project
+     * captured a landscape frame and then threw most of it away to letterbox.
+     * Keeping roughly the same pixel budget, we now prefer the sensor size
+     * whose ASPECT matches the canvas.
+     */
+    @Volatile private var targetAspect = WANT.width.toFloat() / WANT.height
+
+    fun setTargetAspect(canvasW: Int, canvasH: Int) {
+        if (canvasW <= 0 || canvasH <= 0) return
+        val a = canvasW.toFloat() / canvasH
+        if (kotlin.math.abs(a - targetAspect) < 0.01f) return
+        targetAspect = a
+        // Applied on the next open: reconfiguring an live capture session
+        // mid-flight is what makes cheap devices drop the camera entirely.
+    }
     /**
      * Size for the MediaRecorder surface. Camera2 only accepts sizes from
      * `getOutputSizes(MediaRecorder.class)` — feeding it the ImageReader
@@ -423,9 +443,14 @@ class LiveCamera(
             hasFlashUnit = ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
             val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val sizes = map?.getOutputSizes(ImageFormat.YUV_420_888)
+            // Rank by aspect match FIRST (so a 9:16 project gets a portrait
+            // sensor output), then by closeness to the preview pixel budget.
+            val wantPixels = WANT.width * WANT.height
             feedSize = sizes?.filter { it.width <= 1280 && it.height <= 1280 }
                 ?.minByOrNull {
-                    Math.abs(it.width * it.height - WANT.width * WANT.height)
+                    val ar = it.width.toFloat() / it.height.coerceAtLeast(1)
+                    val aspectPenalty = Math.abs(ar - targetAspect) * 4_000_000f
+                    aspectPenalty + Math.abs(it.width * it.height - wantPixels)
                 } ?: WANT
             // Recorder sizes are a SEPARATE camera2 table: pick the closest
             // ≤1080p MP4 size the device actually supports for MediaRecorder.

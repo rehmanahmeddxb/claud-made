@@ -271,20 +271,22 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         bindSidePanels()
     }
 
+    /**
+     * BUG-07: NO FORCED ROTATION.
+     *
+     * This used to slam the device into SENSOR_LANDSCAPE the moment a user
+     * picked a 16:9 canvas — mid-edit, including for users who deliberately
+     * lock their phone's rotation. Choosing an output ratio is an EXPORT
+     * decision, not a request to rotate the handset.
+     *
+     * The canvas is contain-fitted by ViewportFit in either orientation, so
+     * every aspect is fully editable in portrait and in landscape. The user
+     * rotates the phone when the user wants to; we just re-fit.
+     */
     private fun applyOrientationFor(a: Aspect) {
-        // Follow the canvas: picking a 16:9 canvas rotates the studio into
-        // landscape (where the landscape chrome/rail lives and the canvas
-        // fills the width), picking 9:16 goes portrait. 1:1 is neutral — it
-        // contain-fits either way, so we don't fight the user. The editor
-        // declares configChanges for orientation, so this rotation re-lays
-        // the chrome via onConfigurationChanged instead of restarting the
-        // activity — the camera, decoders and master clock keep running.
-        val want = when (a) {
-            Aspect.R169 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            Aspect.R916 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-            Aspect.R11 -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        if (requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
-        if (requestedOrientation != want) requestedOrientation = want
     }
 
     override fun onSaveInstanceState(out: Bundle) {
@@ -337,6 +339,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     override fun onStop() {
         // don't lose a composite recording if the user leaves mid-take
         if (recording) stopCompositeRecording(showUi = false)
+        // Home shows a real preview of the project (BUG-04). Done on stop so
+        // it costs nothing during editing, and reclaim runs here too because
+        // this is the point where the undo history stops growing.
+        writeProjectThumb()
+        reclaimOrphanMedia()
         if (engineReady()) engine.stopSnapshots()
         // release the camera whenever we leave the foreground; it is restarted
         // in onResume so another app can use the camera meanwhile
@@ -940,7 +947,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             panelContent.addView(head)
             panelContent.addView(sliderRow("Volume  ${(l.volume * 100).toInt()}%",
                 (l.volume * 100).toInt()) { v ->
-                pushUndoLight()
+                pushUndoLight("volume:" + l.id)
                 if (engineReady()) engine.setVolume(l, v / 100f) else l.volume = v / 100f
                 markDirty()
             })
@@ -1068,6 +1075,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         applyOrientationFor(a)
         updateAspectChip()
         markDirty()
+        // BUG-14: the live camera feed targets the project aspect, so a 9:16
+        // project stops capturing a 16:9 frame and letterboxing it away.
+        liveCam?.setTargetAspect(a.canvasW, a.canvasH)
         stage.post { syncPreviewTarget() }
         stage.refresh()
         showUndoSnack("Canvas ${a.code} — every source keeps its own frame ratio")
@@ -1242,7 +1252,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         }
         panelContent.addView(sliderRow("Opacity  ${(l.opacity * 100).toInt()}%",
             (l.opacity * 100).toInt()) { v ->
-            pushUndoLight(); l.opacity = v / 100f; markDirty(); stage.refresh()
+            pushUndoLight("opacity:" + l.id); l.opacity = v / 100f; markDirty(); stage.refresh()
         })
 
         if (l.isClip()) {
@@ -1263,7 +1273,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 })
             panelContent.addView(sliderRow("Volume  ${(l.volume * 100).toInt()}%",
                 (l.volume * 100).toInt()) { v ->
-                pushUndoLight(); engine.setVolume(l, v / 100f); markDirty()
+                pushUndoLight("volume:" + l.id); engine.setVolume(l, v / 100f); markDirty()
             })
             val soloNote = UI.label(this,
                 "Solo = only soloed sources are heard (nothing else is changed or lost).",
@@ -1282,7 +1292,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 "Change color" to { cycleTextColor(l); openAdvancedSheet(l) })
             panelContent.addView(sliderRow("Text size",
                 (l.fontSizeN * 1000).toInt().coerceIn(10, 300)) { v ->
-                pushUndoLight(); l.fontSizeN = v / 1000f; markDirty(); stage.refresh()
+                pushUndoLight("fontsize:" + l.id); l.fontSizeN = v / 1000f; markDirty(); stage.refresh()
             })
             panelButtonRow(panelContent,
                 (if (l.shadow) "Shadow: on" else "Shadow: off") to {
@@ -1322,16 +1332,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val del = UI.btn(this, "Delete source", accent = false, small = false)
         del.setTextColor(UI.DANGER)
         del.contentDescription = "Delete ${l.name}"
-        val dlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(this, 44))
+        // BUG-11: 44 -> 48dp
+        val dlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(this, 48))
         dlp.setMargins(UI.dp(this, 12), UI.dp(this, 2), UI.dp(this, 12), UI.dp(this, 14))
         del.layoutParams = dlp
         del.setOnClickListener {
-            guardRecording {
-                val nm = l.name
-                ctrl.delete(l.id); selectedId = null; engine.evict(l.id)
-                setSheet(null); refreshAll()
-                showUndoSnack("Deleted $nm")
-            }
+            // one destructive verb for every surface (BUG-01/02/03)
+            setSheet(null)
+            deleteSource(l)
         }
         panelContent.addView(del)
 
@@ -1591,19 +1599,18 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         mixerPanel?.bind(p?.layers ?: emptyList(), selectedId)
     }
 
+    /**
+     * BUG-03: the Sources panel "Remove" button used to delete in complete
+     * silence — no message, no undo offer. It now shares the one destructive
+     * verb every other surface uses.
+     */
     fun removeSelectedSource() {
         val id = selectedId ?: run {
             UI.toast(this, "Select a source first")
             return
         }
         val l = proj?.layerById(id) ?: return
-        if (l.isLive()) {
-            removeLiveCameraLayer()
-            return
-        }
-        if (engineReady()) engine.evict(id)
-        selectedId = null
-        ctrl.delete(id)
+        deleteSource(l)
     }
 
     fun controlsStopTap() {
@@ -1633,9 +1640,63 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private fun flushSave() {
         val p = proj ?: return
         p.updatedAt = System.currentTimeMillis()
-        store.save(p, alsoSnapshot = true)
-        saveDirty = false
+        val ok = store.save(p, alsoSnapshot = true)
+        saveDirty = !ok
+        // BUG-17: a failed save used to be completely invisible. Tell the user,
+        // because the alternative is losing an edit session in silence.
+        if (!ok) showSnack("Could not save the project — storage may be full")
         try { updateName() } catch (_: Exception) { }
+    }
+
+    /**
+     * BUG-04: write the Home thumbnail.
+     *
+     * `ProjectStore.saveThumb()` existed but had ZERO callers, so every card
+     * on the home screen showed an empty grey box for the life of the app.
+     * Rendered through the same Compositor as the preview and the export, so
+     * the card shows what the project actually looks like.
+     */
+    private fun writeProjectThumb() {
+        val p = proj ?: return
+        if (p.layers.isEmpty()) return
+        try {
+            // small, cheap: the Home card renders it at 66dp
+            val tw = 320
+            val th = (tw.toFloat() * p.aspect.canvasH / p.aspect.canvasW).toInt().coerceAtLeast(1)
+            val bmp = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+            val c = android.graphics.Canvas(bmp)
+            com.rehman.ahmedreactionstudio.core.Compositor.draw(
+                com.rehman.ahmedreactionstudio.core.Compositor.Ctx(), c, tw, th, p,
+                { engine.frameOf(it) }, engine.master(), null)
+            store.saveThumb(p.id, bmp)
+            bmp.recycle()
+        } catch (_: Exception) {
+            // a thumbnail is cosmetic — never let it break leaving the editor
+        }
+    }
+
+    /**
+     * BUG-09: reclaim media bytes that nothing can reach any more.
+     *
+     * Deliberately NOT called at delete time. Undo restores the deleted layer,
+     * so its file must survive as long as any undo/redo snapshot still names
+     * it. We therefore collect relPaths from the live project AND from every
+     * reachable history entry, and only sweep what neither can reach.
+     */
+    private fun reclaimOrphanMedia() {
+        val p = proj ?: return
+        try {
+            val referenced = HashSet<String>()
+            p.layers.mapNotNullTo(referenced) { it.relPath }
+            for (snap in undo.reachableSnapshots()) {
+                val arr = org.json.JSONObject(snap).optJSONArray("layers") ?: continue
+                for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.optString("relPath")?.takeIf { it.isNotBlank() }
+                        ?.let { referenced.add(it) }
+                }
+            }
+            store.reclaimOrphanMedia(projectId, referenced)
+        } catch (_: Exception) { }
     }
 
     private fun pushUndo() {
@@ -1644,9 +1705,24 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     private var lastUndoPush = 0L
-    fun pushUndoLight() {
-        if (System.currentTimeMillis() - lastUndoPush > 350) pushUndo()
-        lastUndoPush = System.currentTimeMillis()
+    private var lastUndoKind: String? = null
+
+    /**
+     * Coalescing undo push for continuous gestures (sliders, drags).
+     *
+     * BUG-12: the old version compared only elapsed time, so a slider tweak
+     * followed within 350 ms by a DIFFERENT kind of edit silently suppressed
+     * the second snapshot — one undo then jumped back two edits. Coalescing is
+     * only correct for consecutive edits of the SAME kind, so the kind is now
+     * part of the decision.
+     */
+    @JvmOverloads
+    fun pushUndoLight(kind: String? = null) {
+        val now = System.currentTimeMillis()
+        val sameKind = kind != null && kind == lastUndoKind
+        if (!sameKind || now - lastUndoPush > 350) pushUndo()
+        lastUndoPush = now
+        lastUndoKind = kind
     }
 
     fun doUndo() {
@@ -1718,7 +1794,98 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         startActivityForResult(i, REQ_CAMERA)
     }
 
+    /**
+     * BUG-08: screen-recording pre-flight.
+     *
+     * Starting a MediaProjection capture is the single most failure-prone
+     * action in the app: it needs a foreground service, a mandatory
+     * notification on API 33+, an encoder, and real free storage. Previously
+     * the only checks were "is it already running" and "does the system have a
+     * MediaProjectionManager", so the user could burn a system consent dialog
+     * and a take before discovering the disk was full.
+     *
+     * @return true when capture may proceed.
+     */
+    private fun screenRecordPreflight(): Boolean {
+        // 1. already running
+        if (ScreenCaptureService.running) {
+            themedDialog("Screen recording is already running",
+                "Stop the current screen recording before starting another one.")
+            return false
+        }
+        // 2. platform support
+        if (getSystemService(MediaProjectionManager::class.java) == null) {
+            themedDialog("Screen capture unavailable",
+                "This device does not provide screen capture to apps.")
+            return false
+        }
+        // 3. free storage — a screen recording is roughly 6 MB per minute at
+        //    the configured bitrate; refuse under 200 MB rather than dying
+        //    mid-take with a corrupt file.
+        val freeBytes = try {
+            val st = android.os.StatFs(filesDir.absolutePath)
+            st.availableBlocksLong * st.blockSizeLong
+        } catch (_: Exception) { Long.MAX_VALUE }
+        val minBytes = 200L * 1024 * 1024
+        if (freeBytes < minBytes) {
+            themedDialog("Not enough free space",
+                "Screen recording needs at least 200 MB free, but only " +
+                    "${freeBytes / (1024 * 1024)} MB is available. Free some " +
+                    "space and try again.")
+            return false
+        }
+        // 4. notification permission: the capture runs in a foreground service
+        //    whose notification is MANDATORY on API 33+. Without it the
+        //    service is killed and the recording silently dies.
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED) {
+            // requested below in the normal permission flow — not fatal here
+            return true
+        }
+        return true
+    }
+
+    /**
+     * A dialog that matches the studio's dark theme instead of the stock
+     * light-on-white AlertDialog that every other error used.
+     */
+    internal fun themedDialog(title: String, message: String,
+                              confirmLabel: String? = null,
+                              onConfirm: (() -> Unit)? = null) {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(UI.dp(this, 22), UI.dp(this, 18), UI.dp(this, 22), UI.dp(this, 6))
+        val t = TextView(this)
+        t.text = title
+        t.setTextColor(Color.WHITE)
+        t.textSize = 16f
+        t.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        box.addView(t)
+        val m = TextView(this)
+        m.text = message
+        m.setTextColor(Color.argb(215, 235, 238, 245))
+        m.textSize = 13f
+        m.setLineSpacing(UI.dpf(this, 4f), 1f)
+        UI.margin(m, 0, 10, 0, 0, this)
+        box.addView(m)
+        val d = AlertDialog.Builder(this)
+            .setView(box)
+            .setPositiveButton(confirmLabel ?: "OK") { _, _ -> onConfirm?.invoke() }
+            .apply { if (onConfirm != null) setNegativeButton("Cancel", null) }
+            .create()
+        d.setOnShowListener {
+            d.window?.setBackgroundDrawable(
+                Ic.pill(this, Color.argb(252, 20, 23, 31), 18f,
+                    Color.argb(90, 255, 255, 255)))
+            d.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(UI.ACCENT2)
+            d.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(UI.FG2)
+        }
+        d.show()
+    }
+
     private fun startScreenCapture() {
+        if (!screenRecordPreflight()) return
         pendingRole = if (proj!!.layers.isEmpty()) "main" else "pip"
         val need = ArrayList<String>()
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
@@ -2690,6 +2857,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             }
         })
         liveCam = cam
+        // BUG-14: capture at the project's aspect from the very first frame.
+        proj?.aspect?.let { cam.setTargetAspect(it.canvasW, it.canvasH) }
         cam.start(front = true)
         UI.toast(this, "Live camera on the canvas — drag, resize and record from ◉ Studio")
     }
@@ -2827,6 +2996,40 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
     override fun undo() { doUndo() }
     override fun redo() { doRedo() }
+
+    // ===== ONE implementation of every destructive verb (BUG-01/02/03) =====
+    //
+    // Before this, the radial wheel called ctrl.delete()/ctrl.toggleVisible()
+    // directly and the Sources panel did the same. Both mutate state correctly
+    // and both push undo — but neither showed the snackbar, so the ONLY way a
+    // user could learn that undo was available was to already know about the
+    // top-strip arrow. Deleting a source from the wheel was completely silent.
+    //
+    // Every surface now funnels here, so "destroy → explain → offer UNDO" has
+    // exactly one definition and cannot drift apart again.
+
+    override fun deleteSource(l: Layer) {
+        guardRecording {
+            val nm = l.name.ifBlank { l.type.label }
+            // The live camera owns hardware; removing its layer must also stop
+            // the capture session, which removeLiveCameraLayer() handles.
+            if (l.isLive()) {
+                removeLiveCameraLayer()
+                showUndoSnack("Deleted $nm")
+                return@guardRecording
+            }
+            if (engineReady()) engine.evict(l.id)
+            if (selectedId == l.id) selectedId = null
+            ctrl.delete(l.id)
+            refreshAll()
+            showUndoSnack("Deleted $nm")
+        }
+    }
+
+    override fun hideSource(l: Layer) {
+        ctrl.toggleVisible(l.id)
+        showHideFeedback(l)
+    }
 
     /**
      * P0-1: minimal-chrome guard. StudioLayoutInjector assigns every sheet

@@ -36,6 +36,17 @@ class UndoStack(private val maxDepth: Int = 50) {
     }
 
     fun clear() { undo.clear(); redo.clear() }
+
+    /**
+     * Every layer-list snapshot currently reachable by undo OR redo.
+     *
+     * Media garbage collection needs this: a file is only genuinely orphaned
+     * when NO reachable history state still references it. Deleting a source's
+     * bytes at delete-time would make "UNDO" restore a layer whose media file
+     * no longer exists — a silent black frame that is far worse than the few
+     * kB of storage the eager delete would have saved.
+     */
+    fun reachableSnapshots(): List<String> = undo.toList() + redo.toList()
 }
 
 /** Compose layers list JSON from a project (used as command payloads). */
