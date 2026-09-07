@@ -122,8 +122,12 @@ object SidebarTree {
     private fun controlsSection(h: RadialMenus.Host): Section {
         val s = h.selected()
         if (s == null) {
+            // NOTE: no trailing lambda here — Item's last parameter is
+            // `expanded: Boolean`, so `Item(...) {}` would bind the lambda to
+            // it (compile error), not to `action`. A disabled info row simply
+            // has no action.
             return Section("controls", R.drawable.ic_settings, "Source Controls", null,
-                listOf(Item(R.drawable.ic_info, "Select a source first", enabled = false) {}))
+                listOf(Item(R.drawable.ic_info, "Select a source first", enabled = false)))
         }
         val items = mutableListOf<Item>()
 
@@ -227,7 +231,7 @@ object SidebarTree {
 
         if (clips.isEmpty() && live == null) {
             items.add(Item(R.drawable.ic_info, "No audio sources yet",
-                enabled = false) {})
+                enabled = false))
         }
 
         return Section("audio", R.drawable.ic_volume, "Audio",
