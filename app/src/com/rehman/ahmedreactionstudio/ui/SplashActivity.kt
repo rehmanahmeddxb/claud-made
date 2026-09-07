@@ -160,6 +160,10 @@ class SplashActivity : Activity() {
         pulse(ring1, 150L, 1900L)
         pulse(ring2, 1000L, 1900L)
 
+        // P1 quick win: tap to skip (the intro is delight, not a gate).
+        root.isClickable = true
+        root.isFocusable = true
+        root.setOnClickListener { main.removeCallbacks(advance); fadeOutAndGo() }
         main.postDelayed(advance, 2400L)
     }
 

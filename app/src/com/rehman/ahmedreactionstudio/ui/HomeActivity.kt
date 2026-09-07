@@ -80,7 +80,7 @@ class HomeActivity : Activity() {
         tt.addView(sub)
         header.addView(tt)
 
-        val diagBtn = UI.chip(this, "ⓘ Diag")
+        val diagBtn = UI.chip(this, "Diagnostics")
         diagBtn.contentDescription = "Open diagnostics"
         diagBtn.setOnClickListener {
             startActivity(Intent(this, DiagnosticsActivity::class.java))
@@ -190,6 +190,7 @@ class HomeActivity : Activity() {
         val nameInput = EditText(this)
         nameInput.hint = "Project name"
         nameInput.setText("My Reaction")
+        nameInput.selectAll()
         nameInput.setTextColor(UI.FG)
         nameInput.setHintTextColor(Color.argb(150, 255, 255, 255))
         holder.addView(nameInput)
@@ -205,29 +206,36 @@ class HomeActivity : Activity() {
             c.contentDescription = "Canvas aspect ratio ${a.code}"
             c.layoutParams = rowLp
             c.setOnClickListener {
-                val sel = chips.values.firstOrNull { it === c } ?: return@setOnClickListener
-                for ((k, v) in chips) v.isSelected = (v === c)
+                for ((k, v) in chips) v.isSelected = (k == a)
                 refreshChips(chips)
             }
             chips[a] = c
             aspectRow.addView(c)
         }
         holder.addView(aspectRow)
+        // default 16:9, selected BEFORE show (no chip flicker)
+        chips[Aspect.R169]?.isSelected = true
+        refreshChips(chips)
 
+        // Positive button wired AFTER show so a blank name keeps the dialog
+        // open with an inline error instead of auto-dismissing (P1-10).
         val dlg = AlertDialog.Builder(this)
             .setTitle("New project")
             .setView(holder)
-            .setPositiveButton("Create") { _, _ ->
-                val name = nameInput.text.toString()
-                val aspect = chips.entries.firstOrNull { it.value.isSelected }?.key ?: Aspect.R169
-                val p = store.create(name, aspect)
-                openProject(p.id)
-            }
+            .setPositiveButton("Create", null)
             .setNegativeButton("Cancel", null)
             .show()
-        // default select 16:9 landscape (classic YouTube reaction canvas)
-        chips[Aspect.R169]?.isSelected = true
-        refreshChips(chips)
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val name = nameInput.text.toString().trim()
+            if (name.isEmpty()) {
+                nameInput.error = "Give your project a name"
+                return@setOnClickListener
+            }
+            val aspect = chips.entries.firstOrNull { it.value.isSelected }?.key ?: Aspect.R169
+            val p = store.create(name, aspect)
+            dlg.dismiss()
+            openProject(p.id)
+        }
     }
 
     private fun refreshChips(chips: HashMap<Aspect, TextView>) {

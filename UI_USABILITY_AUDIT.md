@@ -659,6 +659,16 @@ Lone 40dp back button replaced by a full top strip: 48dp back, project name + me
 
 **On-device verify:** ≡ opens/closes sources; eye/mute/status/drag/long-press all work; steppers select hidden sources; mixer sliders ride volume live; Advanced… shows full sheet (opacity/volume/arrange/text/delete+Undo); sheet never covers >45% height; rotate with each sheet open; Back closes sheet before exiting.
 
+### 2026-09-07 — Small-P1 sweep 1 (dialog correctness + quick wins)
+
+- **P1-10 new-project dialog:** blank names rejected with an inline error (dialog stays open — positive button wired post-`show()`); 16:9 pre-selected before `show()` (no chip flicker); chip taps capture the loop var directly (fragile identity lookup gone); name field select-all on open.
+- **Splash tap-to-skip** (intro is delight, not a gate; idempotent via existing `leaving` guard).
+- **"ⓘ Diag" → "Diagnostics"** (plain word, jargon gone).
+- **Export-lock toasts unified** (4 sites, 2 wordings → one: "Export in progress — stop it to make changes").
+- **Post-export actions explicit:** was View(=open folder!)/Share/Close buttons → now Play video / Open file location / Share action list + Close. ("View" read as "play the video" but opened the folder.)
+
+**On-device verify:** blank project name → inline error, stays open; 16:9 prelit, no flicker; tap splash → skips; post-export each action works (play opens player, location opens Files, share sheets).
+
 ---
 
 *End of audit. Next step: confirm P0-1 on a device (2 minutes), then work P0 in the suggested order. Say the word and I'll start implementing — P0-1 + P0-6 + quick wins first.*

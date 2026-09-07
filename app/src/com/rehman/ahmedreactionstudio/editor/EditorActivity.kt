@@ -1029,7 +1029,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      * is undoable.
      */
     fun showAspectPicker() {
-        if (exportRunning) { UI.toast(this, "Stop the export first"); return }
+        if (exportRunning) { UI.toast(this, "Export in progress — stop it to make changes"); return }
         val cur = proj!!.aspect
         val labels = Aspect.entries.map {
             val hint = when (it) {
@@ -1060,7 +1060,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private fun changeAspect(a: Aspect) {
         val p = proj!!
         if (p.aspect == a) return
-        if (exportRunning) { UI.toast(this, "Stop the export first"); return }
+        if (exportRunning) { UI.toast(this, "Export in progress — stop it to make changes"); return }
         pushUndo()
         p.aspect = a
         applyOrientationFor(a)
@@ -1149,7 +1149,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     /** destructive operations are locked while an export runs (plan §7) */
     private fun guardRecording(f: () -> Unit) {
-        if (exportRunning) { UI.toast(this, "Locked while exporting"); return }
+        if (exportRunning) { UI.toast(this, "Export in progress — stop it to make changes"); return }
         f()
     }
 
@@ -2321,7 +2321,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     private fun startCompositeRecording() {
         if (recording) return
-        if (exportRunning) { UI.toast(this, "Locked while exporting"); return }
+        if (exportRunning) { UI.toast(this, "Export in progress — stop it to make changes"); return }
         val p = proj!!
         if (!p.layers.any { it.isLive() }) { UI.toast(this, "Add the live camera first"); return }
         if (!p.layers.any { it.isClip() }) { UI.toast(this, "Add a local video first"); return }
@@ -2507,14 +2507,22 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                     "\n\nNote: ${codec.label} won't play in some apps — re-export as H.264 if needed."
                 else "") + (lastRecordingNote?.let { "\n\nAudio: $it" } ?: "")
                 lastRecordingNote = null
+                // P1 quick win: explicit verbs — "View" used to open the *folder*,
+                // which read as "play the video". Three actions need four slots,
+                // so this is an action list instead of buttons.
                 AlertDialog.Builder(this)
                     .setTitle(title)
                     .setMessage("$where\n\n${UI.niceBytes(saved.bytes)} · ${codec?.label ?: "H.264 / AVC"}$compatNote")
-                    .setPositiveButton("View") { _, _ -> openInFileManager(saved, mime) }
-                    .setNeutralButton("Share") { _, _ ->
-                        val u = saved.uri ?: saved.path?.let { Uri.fromFile(File(it)) }
-                        if (u != null) UI.shareUri(this, u, mime)
-                        else UI.toast(this, saved.location)
+                    .setItems(arrayOf("Play video", "Open file location", "Share")) { _, which ->
+                        when (which) {
+                            0 -> viewRecording(saved.uri, saved.path, mime)
+                            1 -> openInFileManager(saved, mime)
+                            else -> {
+                                val u = saved.uri ?: saved.path?.let { Uri.fromFile(File(it)) }
+                                if (u != null) UI.shareUri(this, u, mime)
+                                else UI.toast(this, saved.location)
+                            }
+                        }
                     }
                     .setNegativeButton("Close", null)
                     .show()
