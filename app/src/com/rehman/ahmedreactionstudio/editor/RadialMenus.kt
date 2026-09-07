@@ -119,6 +119,13 @@ object RadialMenus {
         fun isStatsHudOn(): Boolean
         fun toggleStatsHud()
 
+        // settings: where finished videos land + how the studio rotates
+        fun saveFolderLabel(): String
+        fun pickSaveFolder()
+        fun resetSaveFolder()
+        fun orientPolicyName(): String
+        fun setOrientPolicyByName(p: String)
+
         fun toast(msg: String)
     }
 
@@ -157,10 +164,88 @@ object RadialMenus {
             // working equivalent (mute/volume/solo/mic gain) — open that.
             // (P1-3 may re-point this at the restored Audio sheet.)
             folder(R.drawable.ic_volume, "Audio", badge = if (audioN > 0) "$audioN" else null) { audioWheel(h) },
-            folder(R.drawable.ic_flash, "Light", badge = lightBadge) { lightRoot(h) },
+            // Recording is a top-level job, not something buried under Play.
+            // Light lives inside it (lighting is a *recording* decision) and
+            // still keeps its ON badge visible from the root ring.
+            folder(R.drawable.ic_stop, "Record",
+                badge = if (h.isRecordingComposite()) "REC" else lightBadge) { record(h) },
             folder(R.drawable.ic_aspect, "Canvas") { canvas(h) },
             folder(R.drawable.ic_export, "Export") { export(h) },
-            folder(R.drawable.ic_settings, "Project") { project(h) }
+            folder(R.drawable.ic_settings, "Settings") { settings(h) }
+        )
+    }
+
+    // ================= RECORD =================
+
+    /** Everything that starts or stops a capture, in one ring. */
+    fun record(h: Host): RadialMenuView.Level = RadialMenuView.Level(
+        R.drawable.ic_stop, "Record", "start · stop · take · screen"
+    ) {
+        val rec = h.isRecordingComposite()
+        val live = h.project.layers.firstOrNull { it.isLive() }
+        val out = ArrayList<RadialMenuView.Item>()
+        out.add(item(if (rec) R.drawable.ic_stop else R.drawable.ic_camera,
+            if (rec) "Stop && save" else "Start recording",
+            active = rec, danger = rec,
+            enabled = rec || h.canRecordComposite()) { h.toggleCompositeRecording() })
+        if (!rec && !h.canRecordComposite())
+            out.add(item(R.drawable.ic_info,
+                "Needs a live camera + a video to record", enabled = false) { })
+        out.add(item(if (h.anyPlaying()) R.drawable.ic_pause else R.drawable.ic_play,
+            if (h.anyPlaying()) "Pause playback" else "Play", active = h.anyPlaying(),
+            keepOpen = true) { h.toggleMasterPlay() })
+        if (live != null) {
+            val camRec = h.isCameraRecording(live)
+            out.add(item(if (camRec) R.drawable.ic_stop else R.drawable.ic_camera,
+                if (camRec) "Stop camera take" else "Camera take",
+                active = camRec, danger = camRec) { h.toggleCameraRecord(live) })
+        } else {
+            out.add(item(R.drawable.ic_camera, "Add live camera") { h.addCameraLive() })
+        }
+        out.add(item(R.drawable.ic_screen, "Screen record") { h.addScreen() })
+        out.add(item(R.drawable.ic_image, "Snapshot frame") { h.snapshotFrame() })
+        out.add(folder(R.drawable.ic_flash, "Light") { lightRoot(h) })
+        out.add(item(R.drawable.ic_reset, "Restart", keepOpen = true) { h.restart() })
+        out
+    }
+
+    // ================= SETTINGS =================
+
+    /**
+     * One home for the things that are neither a source nor a canvas: output
+     * quality, where finished videos land, how the studio rotates, plus the
+     * project verbs that used to sit in their own ring.
+     */
+    fun settings(h: Host): RadialMenuView.Level = RadialMenuView.Level(
+        R.drawable.ic_settings, "Settings", "quality · folder · rotation"
+    ) {
+        val hudOn = h.isStatsHudOn()
+        val pol = h.orientPolicyName()
+        listOf(
+            item(R.drawable.ic_export, "Export quality…") { h.openExportPanel() },
+            item(R.drawable.ic_layers, "Save folder: " + h.saveFolderLabel()) { h.pickSaveFolder() },
+            item(R.drawable.ic_reset, "Use default album", keepOpen = true) { h.resetSaveFolder() },
+            folder(R.drawable.ic_aspect, "Rotation: " + when (pol) {
+                "auto" -> "free"; "lock" -> "locked"; else -> "follow canvas"
+            }) { rotation(h) },
+            item(R.drawable.ic_info, if (hudOn) "Stats overlay: on" else "Stats overlay: off",
+                active = hudOn, keepOpen = true) { h.toggleStatsHud() },
+            folder(R.drawable.ic_edit, "Project") { project(h) },
+            item(R.drawable.ic_info, "Diagnostics") { h.openDiagnostics() }
+        )
+    }
+
+    fun rotation(h: Host): RadialMenuView.Level = RadialMenuView.Level(
+        R.drawable.ic_aspect, "Rotation", "how the studio follows your phone"
+    ) {
+        val pol = h.orientPolicyName()
+        listOf(
+            item(R.drawable.ic_aspect, "Follow canvas (16:9 = landscape)",
+                active = pol == "canvas", keepOpen = true) { h.setOrientPolicyByName("canvas") },
+            item(R.drawable.ic_switch, "Free rotation",
+                active = pol == "auto", keepOpen = true) { h.setOrientPolicyByName("auto") },
+            item(R.drawable.ic_lock, "Lock current orientation",
+                active = pol == "lock", keepOpen = true) { h.setOrientPolicyByName("lock") }
         )
     }
 

@@ -260,9 +260,19 @@ object StudioLayoutInjector {
                 ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = UI.dp(activity, 8)
             })
+        // LANDSCAPE STUDIO: the transport must not run under the left source
+        // rail or the wheel hub — that was the "overlapping / cropped buttons"
+        // report. Reserve their exact widths as margins instead of stacking
+        // floating bars on top of each other.
+        val landscape = activity.resources.configuration.orientation ==
+            android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val railW = UI.dp(activity, 196)
+        val hubW = UI.dp(activity, 92)
         root.addView(bottomDock, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.BOTTOM))
+            Gravity.BOTTOM).apply {
+            if (landscape) { leftMargin = railW + UI.dp(activity, 8); rightMargin = hubW }
+        })
 
         // ---- 5 radial-wheel triggers, floating column on the right edge ----
         activity.rootFrame = root
@@ -316,20 +326,17 @@ object StudioLayoutInjector {
             return btn
         }
 
+        // FOUR triggers, not five. "Play" and "Flash" used to duplicate verbs
+        // that now live inside Record, and a five-cell column was tall enough
+        // to collide with the top strip in landscape (clipped labels).
         // 1. Sources — every current source, show/hide, delete, add new
         wheelTrigger(R.drawable.ic_layers, "Sources", "Sources") { RadialMenus.sources(activity) }
         // 2. Audio mixer — mute/volume per source + mic gain
         wheelTrigger(R.drawable.ic_volume, "Audio", "Audio") { RadialMenus.audioWheel(activity) }
-        // 3. Play/Stop — master playback + composite recording (auto-export on stop)
-        wheelTrigger(R.drawable.ic_play, "Play / Record", "Play") { RadialMenus.playStop(activity) }
-        // 4. Flashlight — front/back/both LED + screen light
-        wheelTrigger(R.drawable.ic_flash, "Flash", "Flash") { RadialMenus.lightRoot(activity) }
-        // 5. Studio — the root ring: Canvas · Export · Project (aspect ratio,
-        //    background, quick export + settings, rename, save, undo/redo,
-        //    snapshot, diagnostics). P0-1: root() was previously reachable
-        //    ONLY via a hidden long-press on empty canvas, so Canvas/Export/
-        //    Project were effectively undiscoverable. This trigger replaces
-        //    the dead "Test" placeholder (P0-6) — no dead buttons on the rail.
+        // 3. Record — start/stop, camera take, screen record, light, snapshot
+        wheelTrigger(R.drawable.ic_stop, "Record", "Record") { RadialMenus.record(activity) }
+        // 4. Studio — the root ring: Sources · Add · Audio · Record · Canvas ·
+        //    Export · Settings (quality, save folder, rotation, diagnostics).
         activity.studioBtn = wheelTrigger(R.drawable.ic_wheel, "Studio", "Studio") { RadialMenus.root(activity) }
 
         root.addView(wheelRail, FrameLayout.LayoutParams(
@@ -337,6 +344,64 @@ object StudioLayoutInjector {
             Gravity.CENTER_VERTICAL or Gravity.END).apply {
             rightMargin = UI.dp(activity, 10)
         })
+
+        // ---- LANDSCAPE: the source rail (OBS dock) down the left edge ----
+        // Portrait keeps the sources sheet; in landscape there is width to
+        // spare on the left and none at the bottom, so the mixer rows live
+        // there permanently: tap = select, 👁 = hide, 🔇 = mute, drag = Z.
+        if (landscape) {
+            val railWrap = LinearLayout(activity).apply {
+                tag = "sourceRail"
+                orientation = LinearLayout.VERTICAL
+                background = GradientDrawable().apply {
+                    cornerRadius = UI.dpf(activity, 16f)
+                    setColor(Color.argb(205, 12, 14, 19))
+                    setStroke(UI.dp(activity, 1), Color.argb(55, 255, 255, 255))
+                }
+                setPadding(UI.dp(activity, 6), UI.dp(activity, 6),
+                    UI.dp(activity, 6), UI.dp(activity, 6))
+            }
+            val head = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(UI.dp(activity, 8), 0, 0, 0)
+            }
+            head.addView(TextView(activity).apply {
+                text = "Sources"
+                setTextColor(UI.FG)
+                textSize = 12f
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            head.addView(IconBtn(activity).apply {
+                setIcon(R.drawable.ic_add, Color.WHITE, "Add source")
+                setOnClickListener { activity.openWheelLevel(RadialMenus.add(activity), -1f, -1f) }
+            }, LinearLayout.LayoutParams(UI.dp(activity, 40), UI.dp(activity, 40)))
+            railWrap.addView(head, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+            activity.railContent.orientation = LinearLayout.VERTICAL
+            activity.sideRail.apply {
+                isFillViewport = true
+                removeAllViews()
+                addView(activity.railContent, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
+            // the dock rows render into dockContainer; host it inside the rail
+            (activity.dockContainer.parent as? ViewGroup)?.removeView(activity.dockContainer)
+            activity.railContent.addView(activity.dockContainer,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT))
+            railWrap.addView(activity.sideRail, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+            root.addView(railWrap, FrameLayout.LayoutParams(
+                railW, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START).apply {
+                leftMargin = UI.dp(activity, 6)
+                topMargin = UI.dp(activity, 62)     // clear of the top strip
+                bottomMargin = UI.dp(activity, 8)
+            })
+        }
 
         // ---- P1-1: top strip (back + project + aspect + undo/redo) ----
         // Answers "which project am I in, what ratio, is it saved" at a glance.

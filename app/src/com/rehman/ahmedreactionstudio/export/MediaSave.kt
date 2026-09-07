@@ -67,9 +67,29 @@ object MediaSave {
      *
      * @return null only when every single attempt failed.
      */
-    fun publishVideo(ctx: Context, src: File, displayName: String, mime: String): Saved? {
+    fun publishVideo(ctx: Context, src: File, displayName: String, mime: String): Saved? =
+        publishVideo(ctx, src, displayName, mime, null)
+
+    /**
+     * @param treeUri optional user-chosen download folder (SAF document tree,
+     *        persisted by the Settings ring). Tried FIRST: if the user picked a
+     *        folder, that is where the file belongs. A revoked / deleted tree
+     *        silently falls through to the normal public locations — the caller
+     *        is always told the location that really happened.
+     */
+    fun publishVideo(ctx: Context, src: File, displayName: String, mime: String,
+                     treeUri: Uri?): Saved? {
         if (!src.exists() || src.length() <= 0L) return null
         val expected = src.length()
+
+        // ---- 0. the folder the user explicitly chose ----
+        if (treeUri != null) {
+            val saved = viaTree(ctx, treeUri, src, displayName, mime, expected)
+            if (saved != null) {
+                try { src.delete() } catch (_: Exception) { }
+                return saved
+            }
+        }
 
         // ---- 1. MediaStore (scoped storage, shows in Gallery + Files) ----
         if (Build.VERSION.SDK_INT >= 29) {
@@ -115,6 +135,47 @@ object MediaSave {
 
         return null
     }
+
+    /**
+     * Write into a SAF document tree the user picked in Settings. Verified the
+     * same way as every other path: no bytes, no success.
+     */
+    private fun viaTree(ctx: Context, tree: Uri, src: File, name: String,
+                        mime: String, expected: Long): Saved? {
+        if (Build.VERSION.SDK_INT < 21) return null
+        var doc: Uri? = null
+        return try {
+            val dir = android.provider.DocumentsContract.buildDocumentUriUsingTree(
+                tree, android.provider.DocumentsContract.getTreeDocumentId(tree))
+            doc = android.provider.DocumentsContract.createDocument(
+                ctx.contentResolver, dir, mime, name) ?: return null
+            var written = 0L
+            ctx.contentResolver.openOutputStream(doc)?.use { out ->
+                src.inputStream().use { inp -> written = inp.copyTo(out) }
+                out.flush()
+            } ?: return treeRollback(ctx, doc)
+            if (written < expected) return treeRollback(ctx, doc)
+            val onDisk = sizeOf(ctx, doc)
+            if (onDisk <= 0L) return treeRollback(ctx, doc)
+            Saved(doc, null, onDisk, folderLabel(tree), true)
+        } catch (_: Throwable) {
+            treeRollback(ctx, doc)
+        }
+    }
+
+    private fun treeRollback(ctx: Context, doc: Uri?): Saved? {
+        if (doc != null && Build.VERSION.SDK_INT >= 21) try {
+            android.provider.DocumentsContract.deleteDocument(ctx.contentResolver, doc)
+        } catch (_: Exception) { }
+        return null
+    }
+
+    /** Human-readable name of a chosen tree ("Download/Reactions"). */
+    fun folderLabel(tree: Uri): String = try {
+        val id = android.provider.DocumentsContract.getTreeDocumentId(tree)
+        val tail = id.substringAfter(':', id)
+        if (tail.isBlank()) "Chosen folder" else tail
+    } catch (_: Throwable) { "Chosen folder" }
 
     /**
      * Insert + stream + verify. Any failure rolls the pending row back so a

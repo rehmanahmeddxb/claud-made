@@ -76,6 +76,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         const val REQ_APP_PERMS = 45
         const val REQ_CAMERA_PERM = 46
         const val REQ_RECORD_PERM = 47
+        /** SAF folder picker for the download / save location (Settings ring) */
+        const val REQ_PICK_FOLDER = 48
         /** editor prefs file + key for the preview health overlay */
         const val PREFS_EDITOR = "editor"
         const val PREF_STATS_HUD = "stats_hud"
@@ -85,6 +87,18 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         const val PREF_EXP_MAXDIM = "exp_maxdim"
         const val PREF_EXP_FPS = "exp_fps"
         const val PREF_HAD_EXPORT = "had_export"
+        /** user-chosen download folder (persisted SAF tree URI, "" = default album) */
+        const val PREF_SAVE_TREE = "save_tree"
+        /**
+         * Orientation policy: how the studio reacts to the canvas ratio.
+         *  "canvas" — follow the canvas (16:9 → landscape studio) — default
+         *  "auto"   — free, follow the sensor
+         *  "lock"   — never change what the user set
+         */
+        const val PREF_ORIENT = "orient_policy"
+        const val ORIENT_CANVAS = "canvas"
+        const val ORIENT_AUTO = "auto"
+        const val ORIENT_LOCK = "lock"
     }
 
     private fun editorPrefs() = getSharedPreferences(PREFS_EDITOR, MODE_PRIVATE)
@@ -272,21 +286,47 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     /**
-     * BUG-07: NO FORCED ROTATION.
+     * ORIENTATION POLICY (replaces the old "never rotate" BUG-07 behaviour).
      *
-     * This used to slam the device into SENSOR_LANDSCAPE the moment a user
-     * picked a 16:9 canvas — mid-edit, including for users who deliberately
-     * lock their phone's rotation. Choosing an output ratio is an EXPORT
-     * decision, not a request to rotate the handset.
+     * A 16:9 project is a landscape project: opening it should hand the user
+     * the landscape studio, not a letterboxed strip in portrait. But rotation
+     * is still the USER's to own, so:
+     *
+     *  - policy "canvas" (default): the ratio decides — 16:9 → sensor
+     *    landscape, 9:16 → sensor portrait, 1:1 → free. Applied when the
+     *    project opens, and when the user changes the ratio deliberately.
+     *  - policy "auto": never forced; the sensor decides.
+     *  - policy "lock": whatever the phone is doing right now is frozen.
      *
      * The canvas is contain-fitted by ViewportFit in either orientation, so
-     * every aspect is fully editable in portrait and in landscape. The user
-     * rotates the phone when the user wants to; we just re-fit.
+     * every aspect stays fully editable whichever way the phone ends up.
      */
+    private fun orientPolicy(): String =
+        editorPrefs().getString(PREF_ORIENT, ORIENT_CANVAS) ?: ORIENT_CANVAS
+
+    internal fun setOrientPolicy(p: String) {
+        editorPrefs().edit().putString(PREF_ORIENT, p).apply()
+        proj?.let { applyOrientationFor(it.aspect) }
+        UI.toast(this, when (p) {
+            ORIENT_CANVAS -> "Studio follows the canvas ratio"
+            ORIENT_AUTO -> "Rotation is free"
+            else -> "Rotation locked to the current orientation"
+        })
+    }
+
     private fun applyOrientationFor(a: Aspect) {
-        if (requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        val want = when (orientPolicy()) {
+            ORIENT_LOCK ->
+                if (isLandscape()) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                else ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            ORIENT_AUTO -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            else -> when (a) {
+                Aspect.R169 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                Aspect.R916 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
         }
+        if (requestedOrientation != want) requestedOrientation = want
     }
 
     override fun onSaveInstanceState(out: Bundle) {
@@ -537,7 +577,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val vis = if (on) View.GONE else View.VISIBLE
         topBar.visibility = vis
         sheet.visibility = vis
-        if (this::sideRail.isInitialized) sideRail.visibility = if (on || chromeLandscape != true) View.GONE else View.VISIBLE
+        rootFrame.findViewWithTag<View>("sourceRail")?.visibility = vis
+        rootFrame.findViewWithTag<View>("wheelRail")?.visibility = vis
+        rootFrame.findViewWithTag<View>("bottomDock")?.visibility = vis
         quickWrap.visibility = if (on) View.GONE else View.VISIBLE
         if (on) {
             recChip.visibility = View.GONE
@@ -865,11 +907,17 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         step.addView(selName)
         step.addView(next)
         panelContent.addView(step)
+        // Landscape studio: the dock rows already live in the permanent left
+        // source rail. Stealing dockContainer into this sheet would blank the
+        // rail behind it, so the sheet becomes Add-only there.
+        val railHosted = rootFrame.findViewWithTag<View>("sourceRail") != null
         // the dock list itself (rebuildDock repopulates rows incl. empty state)
+        if (!railHosted) {
         (dockContainer.parent as? ViewGroup)?.removeView(dockContainer)
         dockContainer.layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         panelContent.addView(dockContainer)
+        }
         rebuildDock()
         val add = UI.btn(this,
             if (p.layers.isEmpty()) "+  Add your first source" else "+  Add source",
@@ -1943,6 +1991,20 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 if (!clip.exists()) { UI.toast(this, "Camera take missing"); return }
                 consumeMediaFile(clip, role, name = "Camera take", type = LayerType.CAMERA)
             }
+            REQ_PICK_FOLDER -> {
+                if (res != Activity.RESULT_OK) return
+                val tree = data?.data ?: return
+                try {
+                    contentResolver.takePersistableUriPermission(tree,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                } catch (_: Throwable) {
+                    UI.toast(this, "That folder could not be kept — pick another")
+                    return
+                }
+                editorPrefs().edit().putString(PREF_SAVE_TREE, tree.toString()).apply()
+                UI.toast(this, "Exports will be saved to " + MediaSave.folderLabel(tree))
+            }
             REQ_SCREEN_CAPTURE -> {
                 if (res != Activity.RESULT_OK || data == null) {
                     UI.toast(this, "Screen recording permission denied")
@@ -2446,6 +2508,12 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val rail = rootFrame.findViewWithTag<View>("wheelRail")
         if (rail != null && rail.visibility == View.VISIBLE)
             insetR = (rootFrame.width - rail.left).coerceAtLeast(0)
+        // landscape source rail on the LEFT: the canvas fits beside it, never
+        // under it (this is the overlap the user reported)
+        var insetL = 0
+        val srcRail = rootFrame.findViewWithTag<View>("sourceRail")
+        if (srcRail != null && srcRail.visibility == View.VISIBLE)
+            insetL = srcRail.right.coerceAtLeast(0)
         val insetT = maxOf(visibleBottom("topStrip"), visibleBottom("recChip"))
         var insetB = 0
         val dock = rootFrame.findViewWithTag<View>("bottomDock")
@@ -2455,7 +2523,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         if (sheetV != null && sheetV.visibility == View.VISIBLE)
             insetB = maxOf(insetB, (rootFrame.height - sheetV.top).coerceAtLeast(0))
         val breath = UI.dp(this, 6)
-        stage.setViewportInsets(0,
+        stage.setViewportInsets(
+            if (insetL > 0) insetL + breath else 0,
             if (insetT > 0) insetT + breath else 0,
             if (insetR > 0) insetR + breath else 0,
             if (insetB > 0) insetB + breath else 0)
@@ -2622,6 +2691,52 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     /** audio warnings from the last take (shown in the saved dialog) */
     private var lastRecordingNote: String? = null
 
+    // ================= DOWNLOAD / SAVE FOLDER (Settings ring) =================
+
+    /**
+     * The folder the user chose, or null when we should use the default public
+     * album. A tree whose permission was revoked (folder deleted, SD card
+     * pulled) is dropped here rather than failing every export afterwards.
+     */
+    internal fun saveTreeUri(): Uri? {
+        val s = editorPrefs().getString(PREF_SAVE_TREE, "") ?: ""
+        if (s.isBlank()) return null
+        val u = try { Uri.parse(s) } catch (_: Throwable) { return null }
+        val ok = try {
+            contentResolver.persistedUriPermissions.any { it.uri == u && it.isWritePermission }
+        } catch (_: Throwable) { false }
+        if (!ok) {
+            editorPrefs().edit().remove(PREF_SAVE_TREE).apply()
+            return null
+        }
+        return u
+    }
+
+    /** Label for the Settings ring row. */
+    override fun saveFolderLabel(): String =
+        saveTreeUri()?.let { MediaSave.folderLabel(it) } ?: "Movies/${MediaSave.ALBUM}"
+
+    override fun pickSaveFolder() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        try {
+            startActivityForResult(i, REQ_PICK_FOLDER)
+        } catch (_: Throwable) {
+            UI.toast(this, "This device has no folder picker — using ${saveFolderLabel()}")
+        }
+    }
+
+    override fun resetSaveFolder() {
+        editorPrefs().edit().remove(PREF_SAVE_TREE).apply()
+        UI.toast(this, "Saving to Movies/${MediaSave.ALBUM} again")
+    }
+
+    override fun orientPolicyName(): String = orientPolicy()
+    override fun setOrientPolicyByName(p: String) = setOrientPolicy(p)
+
     /** Copy the finished take somewhere the phone can really see, then report it. */
     private fun saveRecordingToPublic(src: File, showUi: Boolean) {
         val p = proj
@@ -2629,7 +2744,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             .format(java.util.Date())
         val name = "AhmedReaction_${p?.name?.replace(" ", "_") ?: "project"}_$stamp.mp4"
         if (showUi) publishAndReport(src, name, "video/mp4", "Recording saved")
-        else MediaSave.publishVideo(this, src, name, "video/mp4")
+        else MediaSave.publishVideo(this, src, name, "video/mp4", saveTreeUri())
     }
 
     /**
@@ -2645,7 +2760,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                                  codec: Exporter.Codec? = null) {
         showProgress("Saving", "Saving to your phone…", determinate = false)
         Thread {
-            val saved = try { MediaSave.publishVideo(this, src, name, mime) } catch (_: Throwable) { null }
+            val tree = saveTreeUri()
+            val saved = try { MediaSave.publishVideo(this, src, name, mime, tree) } catch (_: Throwable) { null }
             runOnUiThread {
                 dismissProgress()
                 if (saved == null) {
@@ -3053,6 +3169,12 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         setFullCanvas(true)
     }
     override fun openDockPanel() {
+        // Landscape: the source list is already permanently on screen — open
+        // the Sources ring instead of covering the canvas with a duplicate.
+        if (rootFrame.findViewWithTag<View>("sourceRail") != null) {
+            openWheelLevel(RadialMenus.sources(this), -1f, -1f)
+            return
+        }
         if (sheetAttached()) { setSheet("sources"); return }
         openWheelLevel(RadialMenus.sources(this), -1f, -1f)
         UI.toast(this, "Source list sheet is being restored — Sources ring opened")
