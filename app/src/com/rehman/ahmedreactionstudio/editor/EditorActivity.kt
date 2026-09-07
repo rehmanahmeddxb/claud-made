@@ -945,6 +945,30 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     fun updateAspectChip() {
         if (!this::aspectChip.isInitialized) return
         aspectChip.text = proj!!.aspect.code
+        aspectChip.contentDescription =
+            "Canvas aspect ratio ${proj!!.aspect.code}, tap to change"
+    }
+
+    /** P1-1: refresh undo/redo enabled states (dimmed = stack empty, never dead). */
+    private fun refreshUndoRedo() {
+        if (!this::rootFrame.isInitialized) return
+        rootFrame.findViewWithTag<IconBtn>("undoBtn")?.let {
+            val can = undo.canUndo()
+            it.isEnabled = can
+            it.alpha = if (can) 1f else 0.35f
+        }
+        rootFrame.findViewWithTag<IconBtn>("redoBtn")?.let {
+            val can = undo.canRedo()
+            it.isEnabled = can
+            it.alpha = if (can) 1f else 0.35f
+        }
+    }
+
+    /** P1-1: initial top-strip sync after inject (name/meta/aspect/undo). */
+    internal fun syncTopStrip() {
+        updateName()
+        updateAspectChip()
+        refreshUndoRedo()
     }
 
     // ================= panel: EXPORT =================
@@ -1469,7 +1493,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         try { updateName() } catch (_: Exception) { }
     }
 
-    private fun pushUndo() { undo.pushSnapshot(layersJsonOf(proj!!)) }
+    private fun pushUndo() {
+        undo.pushSnapshot(layersJsonOf(proj!!))
+        refreshUndoRedo()
+    }
 
     private var lastUndoPush = 0L
     fun pushUndoLight() {
@@ -1482,6 +1509,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         applyLayersJson(proj!!, snap)
         selectedId = null
         afterStructureChange()
+        refreshUndoRedo()
     }
 
     fun doRedo() {
@@ -1489,6 +1517,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         applyLayersJson(proj!!, snap)
         selectedId = null
         afterStructureChange()
+        refreshUndoRedo()
     }
 
     private fun afterStructureChange() {
@@ -2082,7 +2111,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val rail = rootFrame.findViewWithTag<View>("wheelRail")
         if (rail != null && rail.visibility == View.VISIBLE)
             insetR = (rootFrame.width - rail.left).coerceAtLeast(0)
-        val insetT = maxOf(visibleBottom("closeBtn"), visibleBottom("recChip"))
+        val insetT = maxOf(visibleBottom("topStrip"), visibleBottom("recChip"))
         var insetB = 0
         val dock = rootFrame.findViewWithTag<View>("bottomDock")
         if (dock != null && dock.visibility == View.VISIBLE)
@@ -2677,16 +2706,6 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         return ExportSettings(codec, quality, maxDim, fps)
     }
 
-    private fun persistExportSettings(codec: Exporter.Codec, quality: Int, maxDim: Int, fps: Int) {
-        editorPrefs().edit()
-            .putString(PREF_EXP_CODEC, codec.name)
-            .putInt(PREF_EXP_QUALITY, quality)
-            .putInt(PREF_EXP_MAXDIM, maxDim)
-            .putInt(PREF_EXP_FPS, fps)
-            .putBoolean(PREF_HAD_EXPORT, true)
-            .apply()
-    }
-
     /**
      * P0-5: export settings as a dialog (minimal chrome has no bottom sheet to
      * host picker rows). Four rows — codec / resolution / quality / frame rate —
@@ -2747,7 +2766,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             AlertDialog.Builder(this).setTitle("Codec — only encoders this device has")
                 .setSingleChoiceItems(labels, codecs.indexOf(codec)) { d, which ->
                     codec = codecs[which]
-                    persistExportSettings(codec, quality, maxDim, fps)
+                    saveExportPrefs(codec.name, quality, maxDim, fps)
                     set(codec.label); refreshEstimate(); d.dismiss()
                 }
                 .setNegativeButton("Cancel", null).show()
@@ -2758,7 +2777,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             AlertDialog.Builder(this).setTitle("Resolution")
                 .setSingleChoiceItems(labels, opts.indexOf(maxDim).coerceAtLeast(1)) { d, which ->
                     maxDim = opts[which]
-                    persistExportSettings(codec, quality, maxDim, fps)
+                    saveExportPrefs(codec.name, quality, maxDim, fps)
                     set("${maxDim}p"); refreshEstimate(); d.dismiss()
                 }
                 .setNegativeButton("Cancel", null).show()
@@ -2768,7 +2787,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             AlertDialog.Builder(this).setTitle("Quality")
                 .setSingleChoiceItems(qs.map { it.label }.toTypedArray(), quality) { d, which ->
                     quality = which
-                    persistExportSettings(codec, quality, maxDim, fps)
+                    saveExportPrefs(codec.name, quality, maxDim, fps)
                     set(EncoderConfig.Quality.of(quality).label); refreshEstimate(); d.dismiss()
                 }
                 .setNegativeButton("Cancel", null).show()
@@ -2779,7 +2798,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             AlertDialog.Builder(this).setTitle("Frame rate")
                 .setSingleChoiceItems(labels, opts.indexOf(fps).coerceAtLeast(1)) { d, which ->
                     fps = opts[which]
-                    persistExportSettings(codec, quality, maxDim, fps)
+                    saveExportPrefs(codec.name, quality, maxDim, fps)
                     set("${fps} fps"); refreshEstimate(); d.dismiss()
                 }
                 .setNegativeButton("Cancel", null).show()
@@ -2797,12 +2816,12 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             .setTitle("Export settings")
             .setView(body)
             .setPositiveButton("\u21ea Export video") { _, _ ->
-                persistExportSettings(codec, quality, maxDim, fps)
+                saveExportPrefs(codec.name, quality, maxDim, fps)
                 if (warnLiveBeforeExport()) return@setPositiveButton
                 runExport(quality, maxDim, fps, codec)
             }
             .setNeutralButton("Defaults") { _, _ ->
-                persistExportSettings(Exporter.Codec.H264,
+                saveExportPrefs(Exporter.Codec.H264.name,
                     EncoderConfig.Quality.BALANCED.ordinal, 720, 30)
                 showExportSettings()
             }

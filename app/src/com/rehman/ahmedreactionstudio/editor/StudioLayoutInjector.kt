@@ -144,7 +144,8 @@ object StudioLayoutInjector {
         root.addView(activity.recChip, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, 48),
             Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
-            topMargin = UI.dp(activity, 10)
+            // P1-1: sits below the top strip (strip ~57dp tall)
+            topMargin = UI.dp(activity, 66)
         })
 
         // ---- P0-8: bottom dock — record-readiness pill now, transport row later (P0-2) ----
@@ -284,18 +285,99 @@ object StudioLayoutInjector {
             rightMargin = UI.dp(activity, 10)
         })
 
-        // small unobtrusive back/close affordance — the one piece of "chrome"
-        // kept outside the wheels, since there is otherwise no way to leave
-        // the canvas at all
-        val closeBtn = IconBtn(activity)
-        closeBtn.tag = "closeBtn"
-        closeBtn.layoutParams = IconBtn.sized(activity, 40)
-        closeBtn.setIcon(R.drawable.ic_back, Color.WHITE, "Back")
-        closeBtn.setOnClickListener { activity.onBackPressed() }
-        root.addView(closeBtn, FrameLayout.LayoutParams(
-            UI.dp(activity, 40), UI.dp(activity, 40), Gravity.TOP or Gravity.START).apply {
-            topMargin = UI.dp(activity, 10); leftMargin = UI.dp(activity, 10)
-        })
+        // ---- P1-1: top strip (back + project + aspect + undo/redo) ----
+        // Answers "which project am I in, what ratio, is it saved" at a glance.
+        // Name/meta text is owned by updateName() (tags "name"/"meta"); the aspect
+        // chip by updateAspectChip(); undo/redo dim by refreshUndoRedo().
+        val topStripWrap = LinearLayout(activity).apply {
+            tag = "topStrip"
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply { setColor(Color.argb(190, 10, 11, 15)) }
+        }
+        val topStrip = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(UI.dp(activity, 4), UI.dp(activity, 4),
+                UI.dp(activity, 8), UI.dp(activity, 4))
+        }
+        val backBtn = IconBtn(activity).apply {
+            setIcon(R.drawable.ic_back, Color.WHITE, "Back")
+            setOnClickListener { activity.onBackPressed() }
+        }
+        topStrip.addView(backBtn,
+            LinearLayout.LayoutParams(UI.dp(activity, 48), UI.dp(activity, 48)))
+        val titleCol = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(UI.dp(activity, 4), 0, UI.dp(activity, 4), 0)
+        }
+        val nameView = TextView(activity).apply {
+            tag = "name"
+            setTextColor(Color.WHITE)
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        val metaView = TextView(activity).apply {
+            tag = "meta"
+            setTextColor(UI.FG2)
+            textSize = 11f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        titleCol.addView(nameView,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT))
+        titleCol.addView(metaView,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT))
+        topStrip.addView(titleCol,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        activity.aspectChip.apply {
+            textSize = 13f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setTextColor(Color.WHITE)
+            setPadding(UI.dp(activity, 14), 0, UI.dp(activity, 14), 0)
+            background = Ic.pill(activity, Color.argb(170, 38, 42, 52), 20f,
+                Color.argb(120, 255, 255, 255))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { activity.showAspectPicker() }
+        }
+        topStrip.addView(activity.aspectChip,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                UI.dp(activity, 48)).apply {
+                setMargins(UI.dp(activity, 4), 0, UI.dp(activity, 4), 0)
+            })
+        val undoBtn = IconBtn(activity).apply {
+            tag = "undoBtn"
+            setIcon(R.drawable.ic_undo, Color.WHITE, "Undo")
+            setOnClickListener { activity.doUndo() }
+        }
+        topStrip.addView(undoBtn,
+            LinearLayout.LayoutParams(UI.dp(activity, 48), UI.dp(activity, 48)))
+        val redoBtn = IconBtn(activity).apply {
+            tag = "redoBtn"
+            setIcon(R.drawable.ic_redo, Color.WHITE, "Redo")
+            setOnClickListener { activity.doRedo() }
+        }
+        topStrip.addView(redoBtn,
+            LinearLayout.LayoutParams(UI.dp(activity, 48), UI.dp(activity, 48)))
+        topStripWrap.addView(topStrip,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT))
+        val hairline = View(activity).apply {
+            setBackgroundColor(Color.argb(50, 255, 255, 255))
+        }
+        topStripWrap.addView(hairline,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                UI.dp(activity, 1)))
+        root.addView(topStripWrap, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP))
 
         // ---- P0-7: snackbar under the wheel (visible once the wheel dismisses) ----
         activity.buildSnackBar(root)
@@ -314,6 +396,9 @@ object StudioLayoutInjector {
 
         // ---- P0-2: seek listener + initial transport state ----
         activity.bindTransport()
+
+        // ---- P1-1: project name/meta + aspect + undo/redo state ----
+        activity.syncTopStrip()
     }
 
     private fun bindPanels(activity: EditorActivity, sourcesPanel: SourcesPanel, mixerPanel: MixerPanel, propertiesPanel: View) {

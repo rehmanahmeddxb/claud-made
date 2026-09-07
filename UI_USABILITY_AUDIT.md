@@ -632,6 +632,14 @@ Transport row added to the bottom dock under the record pill (translucent rounde
 
 **P0 COMPLETE.** Remaining plan: P1-1 top strip (name/aspect/save/undo) → P1-2/P1-3 sheets (sources list, properties) → P1-6 onboarding → rest of P1/P2.
 
+### 2026-09-07 — P1-1 fixed (top strip: back + project + aspect + undo/redo)
+
+Lone 40dp back button replaced by a full top strip: 48dp back, project name + meta line (`16:9 canvas · N sources · ✓ Saved`, owned by the existing tag-based `updateName()`), aspect chip (tap → existing undoable `showAspectPicker()`, now with a TalkBack label), and 48dp undo/redo buttons that dim+disable on empty stacks via `refreshUndoRedo()` (called from `pushUndo`/`doUndo`/`doRedo`/inject — never a dead tap). Canvas insets follow the strip; REC pill re-seated below it. Cleanup: dropped the `persistExportSettings` duplicate I added in P0-5 in favour of the identical pre-existing `saveExportPrefs`.
+
+**Validation bonus:** integration checks 50→53 passing (aspect-picker, undo, redo wiring now detected).
+
+**On-device verify:** strip shows correct name/meta/aspect on open; meta flips ●/✓ on edit/save; aspect chip opens picker and rotates canvas (undoable); undo/redo dim when stacks empty and work in one tap otherwise; strip never overlaps canvas.
+
 ---
 
 *End of audit. Next step: confirm P0-1 on a device (2 minutes), then work P0 in the suggested order. Say the word and I'll start implementing — P0-1 + P0-6 + quick wins first.*
