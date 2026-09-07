@@ -675,6 +675,7 @@ Lone 40dp back button replaced by a full top strip: 48dp back, project name + me
 - **Real fixes (6 checks, no guard changes):** ⋮ overflow in the top strip (Export video / Save project / Diagnostics — the strip fits exactly one more 48dp target); seek listener moved into the injector's transport row (gestures owned by chrome, engine refresh via new `transportScrubEnded()` + read-only `isRecording()`); fixed P1-2 KDoc drift on `bindTransport()`.
 - **Guard rewrite (12 → 15 checks, suite 71 → 74, all passing):** phantom dual-orientation/panel-tab checks replaced with real-architecture equivalents (single injector, sheet builders, sheet host, wheel→Host verb reachability for camera/text); added "rotation restores the open sheet". Suite is stricter, not weaker.
 - **Also found:** `relayoutChrome()` has zero callers (rotation goes through `onConfigurationChanged`) — dead code kept only because guards inspect it; follow-up: delete it and its guard block together.
+- **Pre-existing corruption fixed:** `EditorActivity.kt` ended with 13 garbage lines past the class close (fragmented `toggleStatsHud`/`toast` duplicates — in the tree since the P0-1 promotion, never compiled because CI never got past the gate). Truncated; all `.kt` files brace-balanced, no other duplicated methods.
 
 ---
 

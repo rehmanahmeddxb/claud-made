@@ -3288,16 +3288,3 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     override fun toast(msg: String) { UI.toast(this, msg) }
 }
-ty = View.GONE
-        }
-    }
-
-    override fun toast(msg: String) { UI.toast(this, msg) }
-}
-alized) {
-            statsHud.visibility = View.GONE
-        }
-    }
-
-    override fun toast(msg: String) { UI.toast(this, msg) }
-}
