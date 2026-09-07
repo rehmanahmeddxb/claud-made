@@ -654,8 +654,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      * Called after every layout pass (cheap: StageView ignores unchanged
      * values), so opening a panel, expanding the dock, selecting a source or
      * rotating the phone all keep the whole composition on screen.
+     *
+     * `internal` (not private): StudioLayoutInjector re-runs it from the
+     * sidebar's open/close callback so the canvas re-fits around the panel.
      */
-    private fun applyViewportInsets(vararg args: Any?) {
+    internal fun applyViewportInsets(vararg args: Any?) {
         // topBar drew a fixed 8dp top padding regardless of the status bar /
         // cutout height, so on edge-to-edge devices the status bar overlapped
         // the row and clipped it. Add the live system inset on top of the
