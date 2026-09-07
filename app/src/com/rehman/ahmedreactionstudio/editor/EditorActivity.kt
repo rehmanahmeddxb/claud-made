@@ -250,7 +250,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
         ScreenCaptureService.onStopped = { f ->
             runOnUiThread {
-                recChip.visibility = View.GONE
+                updateRecChip()
                 if (f != null) consumeMediaFile(f, if (p.layers.isEmpty()) "main" else "pip",
                     name = "Screen record", type = LayerType.SCREEN)
                 else UI.toast(this, "Screen recording was empty")
@@ -313,8 +313,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             val role = if (proj?.layers?.isEmpty() == true) "main" else "pip"
             consumeMediaFile(pending, role, name = "Screen record", type = LayerType.SCREEN)
         }
-        if (recChip.visibility == View.VISIBLE && !ScreenCaptureService.running &&
-            liveCam?.recording != true) recChip.visibility = View.GONE
+        updateRecChip()
         // a live camera layer that survived a pause / rotate / relaunch gets
         // its feed back (a project saved with a live layer reopens live)
         reconcileLiveCamera()
@@ -387,6 +386,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         rebuildSourceDock()
         refreshContextBar()
         updateRecordButton()
+        updateRecChip()
         stage.post { syncPreviewTarget() }
         stage.refresh()
     }
@@ -529,7 +529,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             emptyOverlay.visibility = View.GONE
         } else {
             refreshAll()
-            recChip.visibility = if (ScreenCaptureService.running || liveCam?.recording == true) View.VISIBLE else View.GONE
+            updateRecChip()
         }
         fullExitBtn.visibility = if (on) View.VISIBLE else View.GONE
         fullExitBtn.bringToFront()
@@ -601,7 +601,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         }
     }
 
-    private fun buildSnackBar(root: FrameLayout) {
+    internal fun buildSnackBar(root: FrameLayout) {
         val bar = LinearLayout(this)
         bar.orientation = LinearLayout.HORIZONTAL
         bar.gravity = Gravity.CENTER_VERTICAL
@@ -625,7 +625,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         snackBar = bar
         val lp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.setMargins(UI.dp(this, 14), 0, UI.dp(this, 14), UI.dp(this, 208))
+        // P0-7: initial seat above the minimal-chrome bottom dock; refreshViewportInsets()
+        // re-seats this dynamically (the dock grows when the P0-2 transport row lands in it).
+        lp.setMargins(UI.dp(this, 14), 0, UI.dp(this, 14), UI.dp(this, 96))
         root.addView(bar, lp)
     }
 
@@ -654,7 +656,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     // ================= progress overlay (themed, cancellable) =================
 
-    private fun buildProgOverlay(root: FrameLayout) {
+    internal fun buildProgOverlay(root: FrameLayout) {
         val over = FrameLayout(this)
         over.setBackgroundColor(Color.argb(150, 0, 0, 0))
         over.visibility = View.GONE
@@ -1581,7 +1583,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         }
         try {
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(svc) else startService(svc)
-            recChip.visibility = if (fullCanvas) View.GONE else View.VISIBLE
+            screenRecStartMs = android.os.SystemClock.elapsedRealtime()
+            updateRecChip()
+            kickRecChipTick()
             setSheet(null)
             UI.toast(this, "Recording screen — tap the top chip to stop")
         } catch (e: Exception) {
@@ -1950,6 +1954,117 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             .show()
     }
 
+    // ============ P0-3 / P0-4 / P0-8: persistent chrome + safe viewport ============
+
+    /** recording start instants (elapsedRealtime) for the REC pill's mm:ss readout */
+    private var recordingStartMs = 0L
+    private var screenRecStartMs = 0L
+    private var camTakeStartMs = 0L
+
+    /** ~2 Hz elapsed-time refresh for the REC pill; stops itself when idle. */
+    private val recChipTick = object : Runnable {
+        override fun run() {
+            updateRecChip()
+            if (recording || ScreenCaptureService.running || liveCam?.recording == true)
+                recordHandler.postDelayed(this, 500L)
+        }
+    }
+
+    private fun kickRecChipTick() {
+        recordHandler.removeCallbacks(recChipTick)
+        recordHandler.post(recChipTick)
+    }
+
+    /**
+     * P0-3: the ONE persistent recording indicator. Exactly one pill, top-center,
+     * always tappable to stop: composite take > screen recording > camera take
+     * (only one is usually active — composite and camera-take recorders are
+     * mutually exclusive by mic ownership). Hidden whenever nothing records.
+     */
+    private fun updateRecChip() {
+        if (!this::recChip.isInitialized) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        fun elapsed(since: Long): String =
+            UI.fmtTime(if (since > 0L) (now - since).coerceAtLeast(0L) else 0L)
+        fun show(text: String, desc: String) {
+            recChip.text = text
+            recChip.contentDescription = desc
+            recChip.visibility = if (fullCanvas) View.GONE else View.VISIBLE
+        }
+        when {
+            recording -> show("● REC ${elapsed(recordingStartMs)} · tap to stop",
+                "Stop recording and save")
+            ScreenCaptureService.running -> show("■ STOP SCREEN ${elapsed(screenRecStartMs)}",
+                "Stop the screen recording")
+            liveCam?.recording == true -> show("● STOP CAMERA TAKE ${elapsed(camTakeStartMs)}",
+                "Stop the camera take")
+            else -> if (recChip.visibility != View.GONE) recChip.visibility = View.GONE
+        }
+    }
+
+    /** REC pill tap: stop whatever is recording (same priority as [updateRecChip]). */
+    fun recChipTap() {
+        when {
+            recording -> stopCompositeRecording()
+            ScreenCaptureService.running -> stopScreenCapture()
+            liveCam?.recording == true -> {
+                val layer = liveCamLayerId?.let { proj?.layerById(it) }
+                if (layer != null) toggleLiveCameraRecord(layer)
+                else updateRecChip()
+            }
+            else -> updateRecChip()
+        }
+    }
+
+    /**
+     * P0-4: keep the canvas fitted clear of the minimal chrome (right rail,
+     * top close/REC pill, bottom record dock). Re-runs on every layout, so
+     * showing/hiding the REC pill or rotating re-fits the canvas — the whole
+     * composition stays visible and what-you-see stays what-exports.
+     */
+    internal fun bindMinimalChromeInsets() {
+        chromeLayoutListener?.let { old ->
+            try { rootFrame.viewTreeObserver.removeOnGlobalLayoutListener(old) }
+            catch (_: Exception) { }
+        }
+        val l = android.view.ViewTreeObserver.OnGlobalLayoutListener { refreshViewportInsets() }
+        chromeLayoutListener = l
+        rootFrame.viewTreeObserver.addOnGlobalLayoutListener(l)
+        rootFrame.post { refreshViewportInsets() }
+    }
+
+    private fun refreshViewportInsets() {
+        if (!this::stage.isInitialized || !this::rootFrame.isInitialized) return
+        if (rootFrame.width <= 0 || rootFrame.height <= 0) return
+        fun visibleBottom(tag: String): Int {
+            val v = rootFrame.findViewWithTag<View>(tag) ?: return 0
+            return if (v.visibility == View.VISIBLE) v.bottom else 0
+        }
+        var insetR = 0
+        val rail = rootFrame.findViewWithTag<View>("wheelRail")
+        if (rail != null && rail.visibility == View.VISIBLE)
+            insetR = (rootFrame.width - rail.left).coerceAtLeast(0)
+        val insetT = maxOf(visibleBottom("closeBtn"), visibleBottom("recChip"))
+        var insetB = 0
+        val dock = rootFrame.findViewWithTag<View>("bottomDock")
+        if (dock != null && dock.visibility == View.VISIBLE)
+            insetB = (rootFrame.height - dock.top).coerceAtLeast(0)
+        val breath = UI.dp(this, 6)
+        stage.setViewportInsets(0,
+            if (insetT > 0) insetT + breath else 0,
+            if (insetR > 0) insetR + breath else 0,
+            if (insetB > 0) insetB + breath else 0)
+        // keep the snackbar floating just above the bottom dock (which grows
+        // when the P0-2 transport row lands inside it)
+        (snackBar?.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+            val want = (if (insetB > 0) insetB + breath else 0) + UI.dp(this, 12)
+            if (lp.bottomMargin != want) {
+                lp.bottomMargin = want
+                snackBar?.layoutParams = lp
+            }
+        }
+    }
+
     /** Frame supplier for the recorder: engine frames + lazily decoded images. */
     private fun recordFrameOf(l: Layer): Bitmap? {
         if (l.type != LayerType.IMAGE) return engine.frameOf(l)
@@ -2049,6 +2164,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         }
         recorder = rec
         recording = true
+        recordingStartMs = android.os.SystemClock.elapsedRealtime()
+        updateRecChip()
+        kickRecChipTick()
         // start every source from the top, in sync — and tell the recorder the
         // exact instant the composition clock started so clip audio joins at 0:00
         engine.seekTo(0L)
@@ -2060,7 +2178,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         recordHandler.removeCallbacks(recordTick)
         recordHandler.post(recordTick)
         UI.toast(this, if (micEnabled || decoded.isNotEmpty())
-            "Recording with audio — tap STOP to save" else "Recording — tap STOP to save")
+            "Recording with audio — tap the REC pill to stop" else "Recording — tap the REC pill to stop")
     }
 
     private fun stopCompositeRecording(showUi: Boolean = true) {
@@ -2072,6 +2190,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val rec = recorder
         recorder = null
         updateRecordButton()
+        updateRecChip()
         if (showUi) showProgress("Finishing recording", "Draining audio and video…", determinate = false)
         rec?.finish { res ->
             runOnUiThread {
@@ -2253,8 +2372,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             l.srcW = 1280; l.srcH = 720
             l.fit = Layer.FIT_FIT
             p.layers.add(l)
-            if (asMain) placeMain(l, p) else placePip(l, p)
-            selectedId = l.id
+                   selectedId = l.id
             liveCamLayerId = l.id
         }
         startLiveCamera()
@@ -2320,7 +2438,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                     "torcherror" -> UI.toast(this,
                         liveCam?.torchLastError()?.takeIf { it.isNotBlank() }
                             ?: "Hardware torch unavailable")
-                    "recording" -> { recChip.text = "● STOP CAMERA TAKE"; recChip.contentDescription = "Stop the camera take"; recChip.visibility = if (fullCanvas) View.GONE else View.VISIBLE }
+                    "recording" -> { camTakeStartMs = android.os.SystemClock.elapsedRealtime(); updateRecChip(); kickRecChipTick() }
                     "live" -> { cameraFallbackShown = false; refreshAll() }
                 }
             }
@@ -2363,7 +2481,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         if (cam.recording) {
             cam.stopRecording { f ->
                 runOnUiThread {
-                    recChip.visibility = View.GONE
+                    updateRecChip()
                     if (f == null || !f.exists()) {
                         UI.toast(this, "Take was too short or failed")
                         refreshAll(); return@runOnUiThread
@@ -2375,10 +2493,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             cam.startRecording(store.mediaDir(projectId)) { ok ->
                 runOnUiThread {
                     if (ok) {
-                        recChip.text = "● STOP CAMERA TAKE"
-                        recChip.contentDescription = "Stop the camera take"
-                        recChip.visibility = if (fullCanvas) View.GONE else View.VISIBLE
-                        UI.toast(this, "Recording the camera take")
+                        camTakeStartMs = android.os.SystemClock.elapsedRealtime()
+                        updateRecChip()
+                        kickRecChipTick()
+                        UI.toast(this, "Recording the take — tap the top chip to stop")
                     } else UI.toast(this, "Could not start the take")
                     refreshAll()
                 }
@@ -2798,6 +2916,19 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             statsHud.text = engine.stats()
             statsHud.visibility = View.VISIBLE
         } else if (this::statsHud.isInitialized) {
+            statsHud.visibility = View.GONE
+        }
+    }
+
+    override fun toast(msg: String) { UI.toast(this, msg) }
+}
+ty = View.GONE
+        }
+    }
+
+    override fun toast(msg: String) { UI.toast(this, msg) }
+}
+alized) {
             statsHud.visibility = View.GONE
         }
     }

@@ -57,7 +57,9 @@ object StudioLayoutInjector {
 
     fun inject(activity: EditorActivity, root: FrameLayout) {
         // ============================================================
-        // MINIMAL CHROME: fullscreen canvas + 5 radial-wheel triggers.
+        // MINIMAL CHROME: fullscreen canvas + rail + REC pill + record dock +
+        // snackbar/progress overlays. (P0-3/P0-4/P0-7/P0-8 grew the original
+        // "canvas + 5 triggers" — the rail is still the only *navigation*.)
         // Every lateinit var EditorActivity declares still gets a real
         // (but often invisible/unattached) object assigned here, so any
         // existing call site elsewhere in the file — dock.rebuild(),
@@ -118,9 +120,68 @@ object StudioLayoutInjector {
         root.addView(activity.emptyOverlay, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
 
+        // ---- P0-3: persistent REC pill (top-center, tap = stop) ----
+        // One pill for composite takes, screen recording and camera takes;
+        // text/visibility/contentDescription are owned by updateRecChip().
+        activity.recChip.apply {
+            tag = "recChip"
+            textSize = 13f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setTextColor(Color.WHITE)
+            setPadding(UI.dp(activity, 16), 0, UI.dp(activity, 16), 0)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            background = Ic.pill(activity, Color.argb(235, 170, 26, 26), 24f,
+                Color.argb(200, 255, 130, 130))
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            contentDescription = "Recording indicator"
+            setOnClickListener { activity.recChipTap() }
+        }
+        root.addView(activity.recChip, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, 48),
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+            topMargin = UI.dp(activity, 10)
+        })
+
+        // ---- P0-8: bottom dock — record-readiness pill now, transport row later (P0-2) ----
+        val bottomDock = LinearLayout(activity).apply {
+            tag = "bottomDock"
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(UI.dp(activity, 12), UI.dp(activity, 8),
+                UI.dp(activity, 12), UI.dp(activity, 12))
+        }
+        activity.recordBtn.apply {
+            tag = "recordBtn"
+            textSize = 13f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setTextColor(Color.WHITE)
+            setPadding(UI.dp(activity, 18), 0, UI.dp(activity, 18), 0)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            isClickable = true
+            isFocusable = true
+            // text/background/alpha/visibility are owned by updateRecordButton()
+            setOnClickListener { activity.recordButtonTap() }
+        }
+        bottomDock.addView(activity.recordBtn, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, 48)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+        })
+        root.addView(bottomDock, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM))
+
         // ---- 5 radial-wheel triggers, floating column on the right edge ----
         activity.rootFrame = root
         val wheelRail = LinearLayout(activity)
+        wheelRail.tag = "wheelRail"
         wheelRail.orientation = LinearLayout.VERTICAL
         wheelRail.gravity = Gravity.CENTER_HORIZONTAL
         val railBg = GradientDrawable()
@@ -173,6 +234,7 @@ object StudioLayoutInjector {
         // kept outside the wheels, since there is otherwise no way to leave
         // the canvas at all
         val closeBtn = IconBtn(activity)
+        closeBtn.tag = "closeBtn"
         closeBtn.layoutParams = IconBtn.sized(activity, 40)
         closeBtn.setIcon(R.drawable.ic_back, Color.WHITE, "Back")
         closeBtn.setOnClickListener { activity.onBackPressed() }
@@ -181,11 +243,20 @@ object StudioLayoutInjector {
             topMargin = UI.dp(activity, 10); leftMargin = UI.dp(activity, 10)
         })
 
+        // ---- P0-7: snackbar under the wheel (visible once the wheel dismisses) ----
+        activity.buildSnackBar(root)
+
         // ---- the radial-menu overlay itself, on top of everything ----
         activity.wheel = RadialMenuView(activity)
         activity.wheel.onDismiss = { }
         root.addView(activity.wheel, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        // ---- P0-7: export/record progress sits above all (cancellable) ----
+        activity.buildProgOverlay(root)
+
+        // ---- P0-4: fit the canvas clear of rail + pills + dock ----
+        activity.bindMinimalChromeInsets()
     }
 
     private fun bindPanels(activity: EditorActivity, sourcesPanel: SourcesPanel, mixerPanel: MixerPanel, propertiesPanel: View) {

@@ -604,6 +604,20 @@ All paths under `_extracted/` (unzipped from `AhmedReactionStudio-source.zip`):
 
 **On-device verify:** open editor → tap ⭐-replacement Studio trigger (5th rail icon) → root ring blooms → drill into Canvas (change aspect), Export (quick export), Project (undo/redo/rename/diagnostics); open a source ring → "Advanced…" → source ring re-opens with toast (no dead end).
 
+### 2026-09-07 — P0-4 + P0-7 + P0-3 + P0-8 fixed (persistent chrome + safe viewport)
+
+**P0-4 viewport insets** — `bindMinimalChromeInsets()` + `refreshViewportInsets()` (`EditorActivity.kt`): a layout listener re-fits the canvas clear of the right rail, top close/REC pill, and bottom dock on every layout/rotation/visibility change (+6dp breathing). WYSIWYG restored at the edges; reuses the existing `chromeLayoutListener` removal in `onDestroy` (no leak).
+
+**P0-7 feedback overlays attached** — `StudioLayoutInjector` now calls `buildSnackBar()` (below the wheel — visible once the wheel dismisses; leaf taps dismiss first, so Delete → Undo works) and `buildProgOverlay()` (above all, cancellable) into the live root. Snackbar bottom margin re-seats dynamically above the bottom dock (ready for the P0-2 transport row). Export/record-prep progress, failure messages, delete-undo, and "waiting for camera" are visible for the first time in minimal chrome.
+
+**P0-3 REC pill** — one persistent top-center red pill (`recChip`, 48dp, TalkBack-labeled), tap = stop. `updateRecChip()` centralizes all 7 former chip sites (composite/screen/camera-take, priority in that order) with mm:ss elapsed at ~2Hz via self-stopping `recChipTick`; respects Full Canvas. Toasts updated ("tap the REC pill / top chip to stop" — now true). Composite recording previously had NO indicator at all.
+
+**P0-8 record readiness** — `recordBtn` attached in a new bottom dock (always visible: "● START RECORDING" / dimmed "ADD CAMERA/VIDEO TO RECORD"); tap routes to the existing guided-setup dialog ("Set up the reaction first" → Add wheel) when incomplete. Bottom dock is the future home of the P0-2 transport row.
+
+**Validation:** pipeline OK, torch 34/34 OK, integration back at 50/21 pre-existing baseline (one transient new FAIL during refactor — "recording chip respects Full Canvas" — fixed by keeping the `fullCanvas` check inside `updateRecChip()`).
+
+**On-device verify:** start each recording type → red pill appears with running time → tap pill stops it; record button always visible at bottom with correct readiness state; canvas never hides under rail/pills (check 16:9 + 9:16, portrait + landscape); export shows cancellable progress; delete a source → Undo snackbar appears.
+
 ---
 
 *End of audit. Next step: confirm P0-1 on a device (2 minutes), then work P0 in the suggested order. Say the word and I'll start implementing — P0-1 + P0-6 + quick wins first.*
